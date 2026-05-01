@@ -14,6 +14,9 @@ const submitButton = document.querySelector("#submitButton");
 const message = document.querySelector("#message");
 const zoomDialog = document.querySelector("#zoomDialog");
 const zoomImage = document.querySelector("#zoomImage");
+const zoomCaption = document.querySelector("#zoomCaption");
+const zoomPrevButton = document.querySelector("#zoomPrevButton");
+const zoomNextButton = document.querySelector("#zoomNextButton");
 const closeZoomButton = document.querySelector("#closeZoomButton");
 
 let currentOffset = 0;
@@ -22,16 +25,35 @@ let currentPage = 1;
 let totalPages = 0;
 let visibleRuns = [];
 let visibleImages = new Map();
+let visibleImageOffsets = new Map();
+let draftSelections = new Map();
+let zoomImages = [];
+let zoomIndex = 0;
 
 loadRunsButton.addEventListener("click", () => loadRuns(pageNumber()));
 prevButton.addEventListener("click", () => loadRuns(Math.max(1, currentPage - 1)));
 nextButton.addEventListener("click", () => loadRuns(currentPage + 1));
 syncButton.addEventListener("click", syncMetadata);
 submitButton.addEventListener("click", submitValidation);
+zoomPrevButton.addEventListener("click", () => moveZoom(-1));
+zoomNextButton.addEventListener("click", () => moveZoom(1));
 closeZoomButton.addEventListener("click", () => zoomDialog.close());
 zoomDialog.addEventListener("click", (event) => {
   if (event.target === zoomDialog) {
     zoomDialog.close();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (!zoomDialog.open) {
+    return;
+  }
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    moveZoom(-1);
+  } else if (event.key === "ArrowRight") {
+    event.preventDefault();
+    moveZoom(1);
   }
 });
 
@@ -77,6 +99,8 @@ async function loadRuns(page) {
   pageInput.value = String(currentPage);
   visibleRuns = [];
   visibleImages = new Map();
+  visibleImageOffsets = new Map();
+  draftSelections = new Map();
   updateSubmitState();
   setMessage("Loading run rows...");
   renderLoadingRows();
@@ -127,17 +151,27 @@ function renderRunTable(runs) {
         <div class="run-id-badge">${escapeHtml(run.run_id)}</div>
         <div class="run-stats">
           <span class="status-label">${escapeHtml(run.status)}</span>
-          <span>${run.validated_images}/${run.image_target_count} validated</span>
+          <span class="validation-count-label">${run.validated_images}/${run.image_target_count} validated</span>
+          <span class="image-count-label">${run.selected_images}/${run.image_target_count} images loaded</span>
           <span>count ${run.sheet_count ?? "n/a"}</span>
           <span>${escapeHtml(run.vehicle_type || "no vehicle")}</span>
         </div>
+        <div class="run-image-controls">
+          <button type="button" data-action="prev-run-images">‹</button>
+          <span class="image-window-label">0/0</span>
+          <button type="button" data-action="next-run-images">›</button>
+          <button type="button" data-action="refresh-images">Refresh Images</button>
+        </div>
       </td>
-      ${[0, 1, 2].map((index) => `<td class="image-slot" data-image-index="${index}"><div class="skeleton">Caching...</div></td>`).join("")}
+      ${[0, 1, 2].map((index) => `<td class="image-slot" data-view-index="${index}"><div class="skeleton">Caching...</div></td>`).join("")}
       <td class="run-actions">
         <button type="button" data-action="pass-all">Pass Run</button>
         <button type="button" data-action="fail-all" class="danger">Fail Run</button>
       </td>
     `;
+    tr.querySelector('[data-action="prev-run-images"]').addEventListener("click", () => moveRunImages(run.run_id, -3));
+    tr.querySelector('[data-action="next-run-images"]').addEventListener("click", () => moveRunImages(run.run_id, 3));
+    tr.querySelector('[data-action="refresh-images"]').addEventListener("click", () => refreshRunImages(run.run_id));
     tr.querySelector('[data-action="pass-all"]').addEventListener("click", () => setRunStatus(run.run_id, "pass"));
     tr.querySelector('[data-action="fail-all"]').addEventListener("click", () => setRunStatus(run.run_id, "fail"));
     runsTableBody.appendChild(tr);
@@ -151,6 +185,7 @@ async function loadImagesForVisibleRuns(runs) {
     try {
       const data = await apiFetch(`/api/runs/${encodeURIComponent(run.run_id)}/images`);
       visibleImages.set(run.run_id, data.images);
+      visibleImageOffsets.set(run.run_id, 0);
       renderImagesForRun(tr, data.images);
     } catch (error) {
       if (tr) {
@@ -168,28 +203,102 @@ function renderImagesForRun(tr, images) {
     return;
   }
 
-  for (const image of images) {
-    const slot = tr.querySelector(`.image-slot[data-image-index="${image.image_index}"]`);
+  const runId = tr.dataset.runId;
+  const offset = visibleImageOffsets.get(runId) || 0;
+  for (let viewIndex = 0; viewIndex < 3; viewIndex += 1) {
+    const slot = tr.querySelector(`.image-slot[data-view-index="${viewIndex}"]`);
     if (!slot) {
       continue;
     }
+    const image = images[offset + viewIndex];
+    if (!image) {
+      slot.innerHTML = '<div class="empty image-empty">No image loaded.</div>';
+      continue;
+    }
+    const draftStatus = draftSelections.get(image.id);
+    const checkedStatus = draftStatus || image.status;
     slot.innerHTML = `
       <div class="thumb-card" data-image-id="${image.id}">
         <img src="${image.file_url}" alt="Run image ${image.image_index + 1}" loading="lazy">
         <div class="thumb-name" title="${escapeHtml(image.member_name)}">${escapeHtml(imageBasename(image.member_name))}</div>
         <div class="thumb-cache">${escapeHtml(cachedText(image))}</div>
         <div class="thumb-actions">
-          <label><input type="radio" name="status-${image.id}" value="pass" ${image.status === "pass" ? "checked" : ""}> Pass</label>
-          <label><input type="radio" name="status-${image.id}" value="fail" ${image.status === "fail" ? "checked" : ""}> Fail</label>
+          <label><input type="radio" name="status-${image.id}" value="pass" ${checkedStatus === "pass" ? "checked" : ""}> Pass</label>
+          <label><input type="radio" name="status-${image.id}" value="fail" ${checkedStatus === "fail" ? "checked" : ""}> Fail</label>
         </div>
       </div>
     `;
     const img = slot.querySelector("img");
-    img.addEventListener("click", () => openZoom(image.file_url));
+    img.addEventListener("click", () => openZoomForRun(runId, image.id));
     slot.querySelectorAll("input").forEach((input) => input.addEventListener("change", () => {
+      draftSelections.set(image.id, input.value);
       markRunDraft(tr);
       updateSubmitState();
     }));
+  }
+  updateRunImageControls(tr, images);
+}
+
+function updateRunImageControls(tr, images) {
+  const runId = tr.dataset.runId;
+  const offset = visibleImageOffsets.get(runId) || 0;
+  const start = images.length ? offset + 1 : 0;
+  const end = Math.min(offset + 3, images.length);
+  const label = tr.querySelector(".image-window-label");
+  const prevButton = tr.querySelector('[data-action="prev-run-images"]');
+  const nextButton = tr.querySelector('[data-action="next-run-images"]');
+  const imageCountLabel = tr.querySelector(".image-count-label");
+  if (label) {
+    label.textContent = `${start}-${end}/${images.length}`;
+  }
+  if (prevButton) {
+    prevButton.disabled = offset <= 0;
+  }
+  if (nextButton) {
+    nextButton.disabled = offset + 3 >= images.length;
+  }
+  if (imageCountLabel) {
+    imageCountLabel.textContent = `${images.length} images loaded`;
+  }
+}
+
+function moveRunImages(runId, delta) {
+  const images = visibleImages.get(runId) || [];
+  const tr = document.querySelector(`#${CSS.escape(rowId(runId))}`);
+  if (!images.length || !tr) {
+    return;
+  }
+  const current = visibleImageOffsets.get(runId) || 0;
+  const maxOffset = Math.max(0, images.length - 3);
+  const nextOffset = Math.max(0, Math.min(maxOffset, current + delta));
+  visibleImageOffsets.set(runId, nextOffset);
+  renderImagesForRun(tr, images);
+}
+
+async function refreshRunImages(runId) {
+  const tr = document.querySelector(`#${CSS.escape(rowId(runId))}`);
+  if (!tr) {
+    return;
+  }
+  const button = tr.querySelector('[data-action="refresh-images"]');
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Loading...";
+  }
+  setMessage(`Loading 3 more images for ${runId}...`);
+  try {
+    const data = await apiFetch(`/api/runs/${encodeURIComponent(runId)}/refresh-images`, { method: "POST" });
+    visibleImages.set(runId, data.images);
+    visibleImageOffsets.set(runId, Math.max(0, data.images.length - 3));
+    renderImagesForRun(tr, data.images);
+    setMessage(`${runId} now has ${data.images.length} cached images. Use ‹ / › to browse them.`);
+  } catch (error) {
+    setMessage(`Could not refresh images for ${runId}: ${error.message}`);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Refresh Images";
+    }
   }
 }
 
@@ -203,6 +312,7 @@ function setRunStatus(runId, status) {
 
   for (const image of images) {
     const input = document.querySelector(`input[name="status-${image.id}"][value="${status}"]`);
+    draftSelections.set(image.id, status);
     if (input) {
       input.checked = true;
     }
@@ -210,9 +320,10 @@ function setRunStatus(runId, status) {
   if (tr) {
     markRunDraft(tr);
     setDraftRunStatus(tr, status);
+    setDraftValidationCount(tr, images.length);
   }
   updateSubmitState();
-  setMessage(`${runId} marked ${status} in draft. Click Submit Visible Validations to save.`);
+  setMessage(`${runId} all ${images.length} loaded images marked ${status} in draft. Click Submit Visible Validations to save.`);
 }
 
 async function submitValidation() {
@@ -224,30 +335,49 @@ async function submitValidation() {
 
   submitButton.disabled = true;
   setMessage(`Saving ${items.length} validation results...`);
-  const data = await apiFetch("/api/validations", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ items }),
-  });
-  setMessage(`Saved ${data.saved} validation results. Refreshing current page...`);
-  await loadRuns(currentPage);
+  try {
+    const data = await apiFetch("/api/validations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    });
+    applySubmittedValidations(items);
+    setMessage(`Saved ${data.saved} validation results.`);
+  } catch (error) {
+    setMessage(`Could not save validations: ${error.message}`);
+    updateSubmitState();
+  }
+}
+
+function applySubmittedValidations(items) {
+  const submittedByImageId = new Map(items.map((item) => [Number(item.image_id), item.status]));
+  for (const [runId, images] of visibleImages.entries()) {
+    let touched = false;
+    for (const image of images) {
+      if (submittedByImageId.has(Number(image.id))) {
+        image.status = submittedByImageId.get(Number(image.id));
+        touched = true;
+      }
+    }
+    if (!touched) {
+      continue;
+    }
+    const tr = document.querySelector(`#${CSS.escape(rowId(runId))}`);
+    if (tr) {
+      setSavedRunStatus(tr, images);
+      renderImagesForRun(tr, images);
+    }
+  }
+  draftSelections.clear();
+  updateSubmitState();
 }
 
 function collectValidationItems() {
-  const items = [];
-  for (const images of visibleImages.values()) {
-    for (const image of images) {
-      const checked = document.querySelector(`input[name="status-${image.id}"]:checked`);
-      if (checked) {
-        items.push({ image_id: image.id, status: checked.value });
-      }
-    }
-  }
-  return items;
+  return Array.from(draftSelections.entries()).map(([imageId, status]) => ({ image_id: imageId, status }));
 }
 
 function updateSubmitState() {
-  const count = collectValidationItems().length;
+  const count = draftSelections.size;
   draftCount.textContent = `${count} selected`;
   submitButton.disabled = count === 0;
 }
@@ -265,6 +395,8 @@ function resetTable() {
   pageInput.value = "1";
   visibleRuns = [];
   visibleImages = new Map();
+  visibleImageOffsets = new Map();
+  draftSelections = new Map();
   runCount.textContent = "";
   runsTableBody.innerHTML = '<tr><td colspan="5" class="empty">Click Load Runs.</td></tr>';
   prevButton.disabled = true;
@@ -289,9 +421,68 @@ function setDraftRunStatus(tr, status) {
   }
 }
 
-function openZoom(url) {
-  zoomImage.src = url;
+function setDraftValidationCount(tr, count) {
+  const label = tr.querySelector(".validation-count-label");
+  if (label) {
+    label.textContent = `${count}/${count} validated draft`;
+  }
+}
+
+function setSavedRunStatus(tr, images) {
+  const validatedCount = images.filter((image) => image.status).length;
+  const hasFail = images.some((image) => image.status === "fail");
+  const status = hasFail ? "fail" : validatedCount >= images.length ? "pass" : validatedCount > 0 ? "partial" : "pending";
+
+  tr.classList.remove(
+    "draft",
+    "draft-pass",
+    "draft-fail",
+    "status-pending",
+    "status-partial",
+    "status-pass",
+    "status-fail",
+  );
+  tr.classList.add(`status-${status}`);
+
+  const statusLabel = tr.querySelector(".status-label");
+  const validationLabel = tr.querySelector(".validation-count-label");
+  if (statusLabel) {
+    statusLabel.textContent = status;
+  }
+  if (validationLabel) {
+    validationLabel.textContent = `${validatedCount}/${images.length} validated`;
+  }
+}
+
+function openZoomForRun(runId, imageId) {
+  zoomImages = visibleImages.get(runId) || [];
+  zoomIndex = Math.max(0, zoomImages.findIndex((image) => image.id === imageId));
+  renderZoomImage();
   zoomDialog.showModal();
+}
+
+function moveZoom(direction) {
+  if (!zoomImages.length) {
+    return;
+  }
+  const nextIndex = zoomIndex + direction;
+  if (nextIndex < 0 || nextIndex >= zoomImages.length) {
+    return;
+  }
+  zoomIndex = nextIndex;
+  renderZoomImage();
+}
+
+function renderZoomImage() {
+  const image = zoomImages[zoomIndex];
+  if (!image) {
+    return;
+  }
+  zoomImage.src = image.file_url;
+  zoomImage.alt = imageBasename(image.member_name);
+  zoomCaption.textContent = `${zoomIndex + 1}/${zoomImages.length} · ${imageBasename(image.member_name)}`;
+  zoomPrevButton.disabled = zoomIndex === 0;
+  zoomNextButton.disabled = zoomIndex === zoomImages.length - 1;
 }
 
 function pageLimit() {

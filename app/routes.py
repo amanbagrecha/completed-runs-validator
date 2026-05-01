@@ -9,7 +9,7 @@ from starlette.templating import Jinja2Templates
 
 from app.config import BATCH_PREFIXES, DEFAULT_IMAGE_COUNT, ROOT_DIR
 from app.db import get_conn, init_db
-from app.services.image_cache import ensure_run_images, get_image_file_path
+from app.services.image_cache import append_run_images, ensure_run_images, get_image_file_path
 from app.services.sync import sync_runs
 from app.services.validations import submit_validations
 
@@ -168,13 +168,25 @@ def get_run_images(run_id: str):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return {
-        "run": {
-            "run_id": run["run_id"],
-            "batch_name": run["batch_name"],
-            "sheet_count": run["sheet_count"],
-            "vehicle_type": run["vehicle_type"],
-            "selection_version": run["selection_version"],
-        },
+        "run": _run_detail_to_dict(run, len(images)),
+        "images": [_image_to_dict(row) for row in images],
+    }
+
+
+@router.post("/api/runs/{run_id}/refresh-images")
+def refresh_run_images(run_id: str):
+    init_db()
+    try:
+        with get_conn() as conn:
+            images = append_run_images(conn, run_id, DEFAULT_IMAGE_COUNT)
+            run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "run": _run_detail_to_dict(run, len(images)),
         "images": [_image_to_dict(row) for row in images],
     }
 
@@ -236,4 +248,16 @@ def _image_to_dict(row):
         "cached_at": row["cached_at"],
         "status": row["status"],
         "file_url": f"/api/images/{row['id']}/file",
+    }
+
+
+def _run_detail_to_dict(row, selected_images: int):
+    return {
+        "run_id": row["run_id"],
+        "batch_name": row["batch_name"],
+        "sheet_count": row["sheet_count"],
+        "vehicle_type": row["vehicle_type"],
+        "selection_version": row["selection_version"],
+        "image_target_count": row["image_target_count"] or DEFAULT_IMAGE_COUNT,
+        "selected_images": selected_images,
     }

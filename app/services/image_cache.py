@@ -36,6 +36,17 @@ def ensure_run_images(conn: sqlite3.Connection, run_id: str) -> list[sqlite3.Row
     return _get_image_rows(conn, run_id, version)
 
 
+def append_run_images(conn: sqlite3.Connection, run_id: str, count: int = DEFAULT_IMAGE_COUNT) -> list[sqlite3.Row]:
+    run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    if not run:
+        raise ValueError(f"Unknown run_id: {run_id}")
+
+    current_target = int(run["image_target_count"] or DEFAULT_IMAGE_COUNT)
+    new_target = current_target + count
+    conn.execute("UPDATE runs SET image_target_count = ? WHERE run_id = ?", (new_target, run_id))
+    return ensure_run_images(conn, run_id)
+
+
 def get_image_file_path(conn: sqlite3.Connection, image_id: int) -> Path | None:
     row = conn.execute("SELECT cache_path FROM run_images WHERE id = ?", (image_id,)).fetchone()
     if not row or not row["cache_path"]:

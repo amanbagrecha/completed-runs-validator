@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Completed Runs Validator</title>
-    <link rel="stylesheet" href="/static/app.css?v=4">
+    <link rel="stylesheet" href="/static/app.css?v=7">
   </head>
   <body>
     <main>
@@ -107,10 +107,15 @@
       </section>
 
       <dialog id="zoomDialog">
-        <button id="closeZoomButton" type="button" aria-label="Close image zoom">Close</button>
+        <div class="zoom-bar">
+          <button id="zoomPrevButton" type="button">Prev</button>
+          <div id="zoomCaption"></div>
+          <button id="zoomNextButton" type="button">Next</button>
+          <button id="closeZoomButton" type="button" aria-label="Close image zoom">Close</button>
+        </div>
         <img id="zoomImage" alt="Zoomed run image">
       </dialog>
     </main>
-    <script src="/static/app.js?v=4"></script>
+    <script src="/static/app.js?v=7"></script>
   </body>
 </html>

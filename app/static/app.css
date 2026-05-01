@@ -20,6 +20,7 @@ header,
 .table-toolbar,
 .toolbar-actions,
 .thumb-actions,
+.run-image-controls,
 .run-actions {
   align-items: center;
   display: flex;
@@ -243,6 +244,30 @@ th:first-child {
   margin-top: 8px;
 }
 
+.run-image-controls {
+  align-items: stretch;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: auto 1fr auto;
+  margin-top: 10px;
+}
+
+.run-image-controls [data-action="refresh-images"] {
+  grid-column: 1 / -1;
+}
+
+.image-window-label {
+  align-items: center;
+  background: #f3f2ea;
+  border: 1px solid #dfddd0;
+  border-radius: 8px;
+  color: #555347;
+  display: flex;
+  font-size: 12px;
+  justify-content: center;
+  padding: 0 8px;
+}
+
 .image-slot {
   min-width: 0;
 }
@@ -301,9 +326,19 @@ th:first-child {
 
 .skeleton,
 .image-error,
+.image-empty,
 .empty {
   color: #77756a;
   font-size: 13px;
+}
+
+.image-empty {
+  align-items: center;
+  background: #f6f5ee;
+  border-radius: 9px;
+  display: flex;
+  height: 150px;
+  justify-content: center;
 }
 
 .skeleton {
@@ -329,7 +364,7 @@ th:first-child {
   border-radius: 12px;
   max-height: 94vh;
   max-width: 94vw;
-  padding: 42px 12px 12px;
+  padding: 58px 12px 12px;
 }
 
 #zoomDialog::backdrop {
@@ -338,15 +373,34 @@ th:first-child {
 
 #zoomDialog img {
   display: block;
-  max-height: 86vh;
+  max-height: 82vh;
   max-width: 90vw;
   object-fit: contain;
 }
 
-#closeZoomButton {
+.zoom-bar {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto 1fr auto auto;
+  left: 12px;
   position: absolute;
   right: 12px;
   top: 10px;
+}
+
+#zoomCaption {
+  color: #f2f2ee;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zoom-bar button:disabled {
+  background: #444;
 }
 
 @media (max-width: 900px) {
