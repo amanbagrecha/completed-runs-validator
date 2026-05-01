@@ -1,0 +1,15 @@
+[project]
+name = "compltd-runs-validator"
+version = "0.1.0"
+description = "Local validation UI for completed ETL runs"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.34.0",
+    "fastapi>=0.115.0",
+    "jinja2>=3.1.0",
+    "pillow>=10.4.0",
+    "uvicorn[standard]>=0.30.0",
+]
+
+[tool.uv]
+package = false

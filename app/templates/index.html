@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Completed Runs Validator</title>
+    <link rel="stylesheet" href="/static/app.css?v=4">
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Completed Runs Validator</h1>
+          <p>Pick a batch, load a small page, validate {{ image_count }} cached images per run.</p>
+        </div>
+        <button id="syncButton" type="button">Sync Metadata</button>
+      </header>
+
+      <section class="panel controls-panel">
+        <div class="controls">
+          <label>
+            Batch
+            <select id="batchSelect">
+              <option value="">Select a batch</option>
+              {% for batch in batches %}
+                <option value="{{ batch.name }}">{{ batch.name }} ({{ batch.count }})</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Run ID filter
+            <input id="runFilter" type="search" placeholder="Optional run_id">
+          </label>
+          <label>
+            Status
+            <select id="statusFilter">
+              <option value="all">All</option>
+              <option value="unfinished">Unfinished</option>
+              <option value="pending">Pending</option>
+              <option value="partial">Partial</option>
+              <option value="pass">Pass</option>
+              <option value="fail">Fail</option>
+              <option value="finished">Finished</option>
+            </select>
+          </label>
+          <label>
+            Page size
+            <select id="limitSelect">
+              <option value="5">5</option>
+              <option value="10" selected>10</option>
+              <option value="20">20</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+          <label>
+            Page
+            <input id="pageInput" type="number" min="1" value="1">
+          </label>
+          <button id="loadRunsButton" type="button">Load Runs</button>
+          <button id="prevButton" type="button" disabled>Prev</button>
+          <button id="nextButton" type="button" disabled>Next</button>
+        </div>
+        <p id="message" class="message">
+          {% if latest_sync %}
+            Last sync indexed {{ latest_sync.indexed_runs }} runs.
+          {% else %}
+            No local sync yet. Click Sync Metadata first.
+          {% endif %}
+        </p>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="table-toolbar">
+          <div>
+            <h2>Runs</h2>
+            <span id="runCount"></span>
+          </div>
+          <div class="toolbar-actions">
+            <span id="draftCount">0 selected</span>
+            <button id="submitButton" type="button" disabled>Submit Visible Validations</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <colgroup>
+              <col class="col-run">
+              <col class="col-image">
+              <col class="col-image">
+              <col class="col-image">
+              <col class="col-validate">
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Run</th>
+                <th>Image 1</th>
+                <th>Image 2</th>
+                <th>Image 3</th>
+                <th>Validate Run</th>
+              </tr>
+            </thead>
+            <tbody id="runsTableBody">
+              <tr><td colspan="5" class="empty">Select a batch to load runs.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <dialog id="zoomDialog">
+        <button id="closeZoomButton" type="button" aria-label="Close image zoom">Close</button>
+        <img id="zoomImage" alt="Zoomed run image">
+      </dialog>
+    </main>
+    <script src="/static/app.js?v=4"></script>
+  </body>
+</html>

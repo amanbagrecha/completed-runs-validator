@@ -1,0 +1,375 @@
+const batchSelect = document.querySelector("#batchSelect");
+const runFilter = document.querySelector("#runFilter");
+const statusFilter = document.querySelector("#statusFilter");
+const limitSelect = document.querySelector("#limitSelect");
+const pageInput = document.querySelector("#pageInput");
+const loadRunsButton = document.querySelector("#loadRunsButton");
+const prevButton = document.querySelector("#prevButton");
+const nextButton = document.querySelector("#nextButton");
+const syncButton = document.querySelector("#syncButton");
+const runsTableBody = document.querySelector("#runsTableBody");
+const runCount = document.querySelector("#runCount");
+const draftCount = document.querySelector("#draftCount");
+const submitButton = document.querySelector("#submitButton");
+const message = document.querySelector("#message");
+const zoomDialog = document.querySelector("#zoomDialog");
+const zoomImage = document.querySelector("#zoomImage");
+const closeZoomButton = document.querySelector("#closeZoomButton");
+
+let currentOffset = 0;
+let currentTotal = 0;
+let currentPage = 1;
+let totalPages = 0;
+let visibleRuns = [];
+let visibleImages = new Map();
+
+loadRunsButton.addEventListener("click", () => loadRuns(pageNumber()));
+prevButton.addEventListener("click", () => loadRuns(Math.max(1, currentPage - 1)));
+nextButton.addEventListener("click", () => loadRuns(currentPage + 1));
+syncButton.addEventListener("click", syncMetadata);
+submitButton.addEventListener("click", submitValidation);
+closeZoomButton.addEventListener("click", () => zoomDialog.close());
+zoomDialog.addEventListener("click", (event) => {
+  if (event.target === zoomDialog) {
+    zoomDialog.close();
+  }
+});
+
+for (const input of [batchSelect, statusFilter, limitSelect]) {
+  input.addEventListener("change", resetTable);
+}
+
+pageInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    loadRuns(pageNumber());
+  }
+});
+
+runFilter.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    pageInput.value = "1";
+    loadRuns(1);
+  }
+});
+
+applyQueryParams();
+
+async function syncMetadata() {
+  setMessage("Syncing Google Sheet and S3 metadata...");
+  syncButton.disabled = true;
+  try {
+    const data = await apiFetch("/api/sync", { method: "POST" });
+    setMessage(`Sync complete: indexed ${data.indexed_runs}/${data.sheet_runs} sheet runs. Missing in S3: ${data.missing_in_s3}.`);
+  } finally {
+    syncButton.disabled = false;
+  }
+}
+
+async function loadRuns(page) {
+  const batch = batchSelect.value;
+  if (!batch) {
+    setMessage("Select a batch first.");
+    return;
+  }
+
+  currentPage = Math.max(1, page || 1);
+  currentOffset = (currentPage - 1) * pageLimit();
+  pageInput.value = String(currentPage);
+  visibleRuns = [];
+  visibleImages = new Map();
+  updateSubmitState();
+  setMessage("Loading run rows...");
+  renderLoadingRows();
+  updateUrl();
+
+  const params = new URLSearchParams({
+    batch,
+    run_id: runFilter.value.trim(),
+    status: statusFilter.value,
+    limit: String(pageLimit()),
+    page: String(currentPage),
+  });
+  const data = await apiFetch(`/api/runs?${params.toString()}`);
+  currentTotal = data.total;
+  currentPage = data.page;
+  totalPages = data.total_pages;
+  currentOffset = data.offset;
+  pageInput.value = String(currentPage);
+  visibleRuns = data.runs;
+  renderRunTable(data.runs);
+  updatePager();
+
+  if (!data.runs.length) {
+    setMessage(`No runs found for ${batch}.`);
+    return;
+  }
+
+  setMessage(`Loading and caching images for ${data.runs.length} visible runs...`);
+  await loadImagesForVisibleRuns(data.runs);
+  setMessage(`Loaded ${data.runs.length} runs. Click images to zoom. Submit saves selected visible validations.`);
+}
+
+function renderRunTable(runs) {
+  runsTableBody.innerHTML = "";
+  if (!runs.length) {
+    runsTableBody.innerHTML = '<tr><td colspan="5" class="empty">No runs found.</td></tr>';
+    runCount.textContent = "0 found";
+    return;
+  }
+
+  for (const run of runs) {
+    const tr = document.createElement("tr");
+    tr.id = rowId(run.run_id);
+    tr.className = `run-row status-${run.status}`;
+    tr.dataset.runId = run.run_id;
+    tr.innerHTML = `
+      <td class="run-cell">
+        <div class="run-id-badge">${escapeHtml(run.run_id)}</div>
+        <div class="run-stats">
+          <span class="status-label">${escapeHtml(run.status)}</span>
+          <span>${run.validated_images}/${run.image_target_count} validated</span>
+          <span>count ${run.sheet_count ?? "n/a"}</span>
+          <span>${escapeHtml(run.vehicle_type || "no vehicle")}</span>
+        </div>
+      </td>
+      ${[0, 1, 2].map((index) => `<td class="image-slot" data-image-index="${index}"><div class="skeleton">Caching...</div></td>`).join("")}
+      <td class="run-actions">
+        <button type="button" data-action="pass-all">Pass Run</button>
+        <button type="button" data-action="fail-all" class="danger">Fail Run</button>
+      </td>
+    `;
+    tr.querySelector('[data-action="pass-all"]').addEventListener("click", () => setRunStatus(run.run_id, "pass"));
+    tr.querySelector('[data-action="fail-all"]').addEventListener("click", () => setRunStatus(run.run_id, "fail"));
+    runsTableBody.appendChild(tr);
+  }
+  runCount.textContent = `${currentTotal} found · page ${currentPage}/${totalPages || 1} · showing ${currentOffset + 1}-${Math.min(currentOffset + runs.length, currentTotal)}`;
+}
+
+async function loadImagesForVisibleRuns(runs) {
+  for (const run of runs) {
+    const tr = document.querySelector(`#${CSS.escape(rowId(run.run_id))}`);
+    try {
+      const data = await apiFetch(`/api/runs/${encodeURIComponent(run.run_id)}/images`);
+      visibleImages.set(run.run_id, data.images);
+      renderImagesForRun(tr, data.images);
+    } catch (error) {
+      if (tr) {
+        tr.querySelectorAll(".image-slot").forEach((slot) => {
+          slot.innerHTML = `<div class="image-error">${escapeHtml(error.message)}</div>`;
+        });
+      }
+    }
+    updateSubmitState();
+  }
+}
+
+function renderImagesForRun(tr, images) {
+  if (!tr) {
+    return;
+  }
+
+  for (const image of images) {
+    const slot = tr.querySelector(`.image-slot[data-image-index="${image.image_index}"]`);
+    if (!slot) {
+      continue;
+    }
+    slot.innerHTML = `
+      <div class="thumb-card" data-image-id="${image.id}">
+        <img src="${image.file_url}" alt="Run image ${image.image_index + 1}" loading="lazy">
+        <div class="thumb-name" title="${escapeHtml(image.member_name)}">${escapeHtml(imageBasename(image.member_name))}</div>
+        <div class="thumb-cache">${escapeHtml(cachedText(image))}</div>
+        <div class="thumb-actions">
+          <label><input type="radio" name="status-${image.id}" value="pass" ${image.status === "pass" ? "checked" : ""}> Pass</label>
+          <label><input type="radio" name="status-${image.id}" value="fail" ${image.status === "fail" ? "checked" : ""}> Fail</label>
+        </div>
+      </div>
+    `;
+    const img = slot.querySelector("img");
+    img.addEventListener("click", () => openZoom(image.file_url));
+    slot.querySelectorAll("input").forEach((input) => input.addEventListener("change", () => {
+      markRunDraft(tr);
+      updateSubmitState();
+    }));
+  }
+}
+
+function setRunStatus(runId, status) {
+  const images = visibleImages.get(runId) || [];
+  const tr = document.querySelector(`#${CSS.escape(rowId(runId))}`);
+  if (!images.length) {
+    setMessage(`Images for ${runId} are still loading. Try again in a moment.`);
+    return;
+  }
+
+  for (const image of images) {
+    const input = document.querySelector(`input[name="status-${image.id}"][value="${status}"]`);
+    if (input) {
+      input.checked = true;
+    }
+  }
+  if (tr) {
+    markRunDraft(tr);
+    setDraftRunStatus(tr, status);
+  }
+  updateSubmitState();
+  setMessage(`${runId} marked ${status} in draft. Click Submit Visible Validations to save.`);
+}
+
+async function submitValidation() {
+  const items = collectValidationItems();
+  if (!items.length) {
+    setMessage("Choose pass/fail for at least one visible image before submitting.");
+    return;
+  }
+
+  submitButton.disabled = true;
+  setMessage(`Saving ${items.length} validation results...`);
+  const data = await apiFetch("/api/validations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
+  setMessage(`Saved ${data.saved} validation results. Refreshing current page...`);
+  await loadRuns(currentPage);
+}
+
+function collectValidationItems() {
+  const items = [];
+  for (const images of visibleImages.values()) {
+    for (const image of images) {
+      const checked = document.querySelector(`input[name="status-${image.id}"]:checked`);
+      if (checked) {
+        items.push({ image_id: image.id, status: checked.value });
+      }
+    }
+  }
+  return items;
+}
+
+function updateSubmitState() {
+  const count = collectValidationItems().length;
+  draftCount.textContent = `${count} selected`;
+  submitButton.disabled = count === 0;
+}
+
+function updatePager() {
+  prevButton.disabled = currentPage <= 1;
+  nextButton.disabled = totalPages === 0 || currentPage >= totalPages;
+}
+
+function resetTable() {
+  currentOffset = 0;
+  currentTotal = 0;
+  currentPage = 1;
+  totalPages = 0;
+  pageInput.value = "1";
+  visibleRuns = [];
+  visibleImages = new Map();
+  runCount.textContent = "";
+  runsTableBody.innerHTML = '<tr><td colspan="5" class="empty">Click Load Runs.</td></tr>';
+  prevButton.disabled = true;
+  nextButton.disabled = true;
+  updateSubmitState();
+}
+
+function renderLoadingRows() {
+  runsTableBody.innerHTML = '<tr><td colspan="5" class="empty">Loading...</td></tr>';
+}
+
+function markRunDraft(tr) {
+  tr.classList.add("draft");
+}
+
+function setDraftRunStatus(tr, status) {
+  tr.classList.remove("status-pending", "status-partial", "status-pass", "status-fail", "draft-pass", "draft-fail");
+  tr.classList.add(`draft-${status}`);
+  const label = tr.querySelector(".status-label");
+  if (label) {
+    label.textContent = `${status} draft`;
+  }
+}
+
+function openZoom(url) {
+  zoomImage.src = url;
+  zoomDialog.showModal();
+}
+
+function pageLimit() {
+  return Number(limitSelect.value || 10);
+}
+
+function imageBasename(name) {
+  return String(name || "").split("/").pop() || String(name || "");
+}
+
+function cachedText(image) {
+  return image.cached_at ? "cached locally" : "cache pending";
+}
+
+function pageNumber() {
+  const parsed = Number(pageInput.value || 1);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1;
+}
+
+function applyQueryParams() {
+  const params = new URLSearchParams(window.location.search);
+  setIfPresent(batchSelect, params.get("batch"));
+  setIfPresent(runFilter, params.get("run_id"));
+  setIfPresent(statusFilter, params.get("status"));
+  setIfPresent(limitSelect, params.get("limit"));
+  setIfPresent(pageInput, params.get("page"));
+  if (batchSelect.value) {
+    loadRuns(pageNumber()).catch((error) => setMessage(error.message));
+  }
+}
+
+function updateUrl() {
+  const params = new URLSearchParams();
+  params.set("batch", batchSelect.value);
+  if (runFilter.value.trim()) {
+    params.set("run_id", runFilter.value.trim());
+  }
+  params.set("status", statusFilter.value);
+  params.set("limit", String(pageLimit()));
+  params.set("page", String(currentPage));
+  window.history.replaceState(null, "", `?${params.toString()}`);
+}
+
+function setIfPresent(element, value) {
+  if (value !== null && value !== "") {
+    element.value = value;
+  }
+}
+
+function rowId(runId) {
+  return `run-${runId.replaceAll("_", "-")}`;
+}
+
+async function apiFetch(url, options = {}) {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+  if (!response.ok) {
+    const detail = data && data.detail ? data.detail : response.statusText;
+    throw new Error(detail);
+  }
+  return data;
+}
+
+function setMessage(text) {
+  message.textContent = text;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
