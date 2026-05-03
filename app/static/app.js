@@ -129,8 +129,12 @@ async function loadRuns(page) {
   }
 
   setMessage(`Loading and caching images for ${data.runs.length} visible runs...`);
-  await loadImagesForVisibleRuns(data.runs);
-  setMessage(`Loaded ${data.runs.length} runs. Click images to zoom. Submit saves selected visible validations.`);
+  const errorCount = await loadImagesForVisibleRuns(data.runs);
+  if (errorCount) {
+    setMessage(`Loaded ${data.runs.length} runs with ${errorCount} image row errors. Details are shown in the affected rows.`);
+  } else {
+    setMessage(`Loaded ${data.runs.length} runs. Click images to zoom. Submit saves selected visible validations.`);
+  }
 }
 
 function renderRunTable(runs) {
@@ -180,14 +184,25 @@ function renderRunTable(runs) {
 }
 
 async function loadImagesForVisibleRuns(runs) {
-  for (const run of runs) {
-    const tr = document.querySelector(`#${CSS.escape(rowId(run.run_id))}`);
+  let errorCount = 0;
+  let nextIndex = 0;
+  const workerCount = Math.min(3, runs.length);
+
+  async function loadNextRunImage() {
+    const index = nextIndex;
+    nextIndex += 1;
+    if (index >= runs.length) {
+      return;
+    }
+    const run = runs[index];
+    const tr = getRunRow(run.run_id);
     try {
       const data = await apiFetch(`/api/runs/${encodeURIComponent(run.run_id)}/images`);
       visibleImages.set(run.run_id, data.images);
       visibleImageOffsets.set(run.run_id, 0);
       renderImagesForRun(tr, data.images);
     } catch (error) {
+      errorCount += 1;
       if (tr) {
         tr.querySelectorAll(".image-slot").forEach((slot) => {
           slot.innerHTML = `<div class="image-error">${escapeHtml(error.message)}</div>`;
@@ -195,7 +210,11 @@ async function loadImagesForVisibleRuns(runs) {
       }
     }
     updateSubmitState();
+    await loadNextRunImage();
   }
+
+  await Promise.all(Array.from({ length: workerCount }, () => loadNextRunImage()));
+  return errorCount;
 }
 
 function renderImagesForRun(tr, images) {
@@ -264,7 +283,7 @@ function updateRunImageControls(tr, images) {
 
 function moveRunImages(runId, delta) {
   const images = visibleImages.get(runId) || [];
-  const tr = document.querySelector(`#${CSS.escape(rowId(runId))}`);
+  const tr = getRunRow(runId);
   if (!images.length || !tr) {
     return;
   }
@@ -276,7 +295,7 @@ function moveRunImages(runId, delta) {
 }
 
 async function refreshRunImages(runId) {
-  const tr = document.querySelector(`#${CSS.escape(rowId(runId))}`);
+  const tr = getRunRow(runId);
   if (!tr) {
     return;
   }
@@ -304,7 +323,7 @@ async function refreshRunImages(runId) {
 
 function setRunStatus(runId, status) {
   const images = visibleImages.get(runId) || [];
-  const tr = document.querySelector(`#${CSS.escape(rowId(runId))}`);
+  const tr = getRunRow(runId);
   if (!images.length) {
     setMessage(`Images for ${runId} are still loading. Try again in a moment.`);
     return;
@@ -362,7 +381,7 @@ function applySubmittedValidations(items) {
     if (!touched) {
       continue;
     }
-    const tr = document.querySelector(`#${CSS.escape(rowId(runId))}`);
+    const tr = getRunRow(runId);
     if (tr) {
       setSavedRunStatus(tr, images);
       renderImagesForRun(tr, images);
@@ -534,6 +553,15 @@ function setIfPresent(element, value) {
 
 function rowId(runId) {
   return `run-${runId.replaceAll("_", "-")}`;
+}
+
+function getRunRow(runId) {
+  for (const row of runsTableBody.querySelectorAll("tr[data-run-id]")) {
+    if (row.dataset.runId === runId) {
+      return row;
+    }
+  }
+  return null;
 }
 
 async function apiFetch(url, options = {}) {
