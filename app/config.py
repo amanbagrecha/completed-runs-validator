@@ -13,21 +13,16 @@ SHEET_CSV_URL = (
     "export?format=csv&gid=2085465220"
 )
 
-AWS_PROFILE = "s3"
-AWS_REGION = "us-east-1"
-S3_BUCKET = "aipanoexport-batch2"
+AWS_PROFILE = "wasabi"
+AWS_REGION = "us-west-1"
+S3_BUCKET = "pano-processed-runs"
+
+BATCH_RANGE_START = 11
+BATCH_RANGE_END = 50
 
 BATCH_PREFIXES = [
-    ("panoramic_clean", "panoramic_clean/"),
-    ("batch2", "batch2/"),
-    ("batch-03", "batch-03/"),
-    ("batch-04", "batch-04/"),
-    ("batch-05", "batch-05/"),
-    ("batch-06", "batch-06/"),
-    ("batch-07", "batch-07/"),
-    ("batch-08", "batch-08/"),
-    ("batch-09", "batch-09/"),
-    ("batch-10", "batch-10/"),
+    (f"batch-{batch_number:02d}", f"batch-{batch_number:02d}/")
+    for batch_number in range(BATCH_RANGE_START, BATCH_RANGE_END + 1)
 ]
 
 DEFAULT_IMAGE_COUNT = 3
