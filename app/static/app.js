@@ -18,6 +18,7 @@ const zoomCaption = document.querySelector("#zoomCaption");
 const zoomPrevButton = document.querySelector("#zoomPrevButton");
 const zoomNextButton = document.querySelector("#zoomNextButton");
 const closeZoomButton = document.querySelector("#closeZoomButton");
+const apiBase = document.body.dataset.apiBase || "/api";
 
 let currentOffset = 0;
 let currentTotal = 0;
@@ -80,7 +81,7 @@ async function syncMetadata() {
   setMessage("Syncing Google Sheet and S3 metadata...");
   syncButton.disabled = true;
   try {
-    const data = await apiFetch("/api/sync", { method: "POST" });
+    const data = await apiFetch(`${apiBase}/sync`, { method: "POST" });
     setMessage(`Sync complete: indexed ${data.indexed_runs}/${data.sheet_runs} sheet runs. Missing in S3: ${data.missing_in_s3}.`);
   } finally {
     syncButton.disabled = false;
@@ -113,7 +114,7 @@ async function loadRuns(page) {
     limit: String(pageLimit()),
     page: String(currentPage),
   });
-  const data = await apiFetch(`/api/runs?${params.toString()}`);
+  const data = await apiFetch(`${apiBase}/runs?${params.toString()}`);
   currentTotal = data.total;
   currentPage = data.page;
   totalPages = data.total_pages;
@@ -186,7 +187,7 @@ function renderRunTable(runs) {
 async function loadImagesForVisibleRuns(runs) {
   let errorCount = 0;
   let nextIndex = 0;
-  const workerCount = Math.min(3, runs.length);
+  const workerCount = Math.min(1, runs.length);
 
   async function loadNextRunImage() {
     const index = nextIndex;
@@ -197,7 +198,7 @@ async function loadImagesForVisibleRuns(runs) {
     const run = runs[index];
     const tr = getRunRow(run.run_id);
     try {
-      const data = await apiFetch(`/api/runs/${encodeURIComponent(run.run_id)}/images`);
+      const data = await apiFetch(`${apiBase}/runs/${encodeURIComponent(run.run_id)}/images`);
       visibleImages.set(run.run_id, data.images);
       visibleImageOffsets.set(run.run_id, 0);
       renderImagesForRun(tr, data.images);
@@ -306,7 +307,7 @@ async function refreshRunImages(runId) {
   }
   setMessage(`Loading 3 more images for ${runId}...`);
   try {
-    const data = await apiFetch(`/api/runs/${encodeURIComponent(runId)}/refresh-images`, { method: "POST" });
+    const data = await apiFetch(`${apiBase}/runs/${encodeURIComponent(runId)}/refresh-images`, { method: "POST" });
     visibleImages.set(runId, data.images);
     visibleImageOffsets.set(runId, Math.max(0, data.images.length - 3));
     renderImagesForRun(tr, data.images);
@@ -355,7 +356,7 @@ async function submitValidation() {
   submitButton.disabled = true;
   setMessage(`Saving ${items.length} validation results...`);
   try {
-    const data = await apiFetch("/api/validations", {
+    const data = await apiFetch(`${apiBase}/validations`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ items }),

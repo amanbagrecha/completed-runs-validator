@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import sqlite3
 import tarfile
 from contextlib import closing
 from pathlib import Path
 from threading import Lock
+from typing import TypedDict
 
 from PIL import Image, ImageFile
 
-from app.config import CACHE_DIR, DEFAULT_IMAGE_COUNT, JPEG_QUALITY, ROOT_DIR, S3_BUCKET
+from app.config import DEFAULT_IMAGE_COUNT, DatasetConfig, JPEG_QUALITY, ROOT_DIR
 from app.services.s3_index import get_s3_client
 
 
@@ -21,8 +23,14 @@ _RUN_LOCKS: dict[str, Lock] = {}
 _RUN_LOCKS_LOCK = Lock()
 
 
-def ensure_run_images(conn: sqlite3.Connection, run_id: str) -> list[sqlite3.Row]:
-    with _run_lock(run_id):
+class ManifestFile(TypedDict):
+    name: str
+    size: int
+    tar_offset: int
+
+
+def ensure_run_images(conn: sqlite3.Connection, dataset: DatasetConfig, run_id: str) -> list[sqlite3.Row]:
+    with _run_lock(dataset, run_id):
         run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         if not run:
             raise ValueError(f"Unknown run_id: {run_id}")
@@ -32,17 +40,22 @@ def ensure_run_images(conn: sqlite3.Connection, run_id: str) -> list[sqlite3.Row
         rows = _get_image_rows(conn, run_id, version)
 
         if len(rows) < target_count:
-            _select_and_cache_images(conn, run, rows, target_count)
+            _select_and_cache_images(conn, dataset, run, rows, target_count)
         else:
             missing = [row for row in rows if not _cached_path_exists(row)]
             if missing:
-                _cache_existing_images(conn, run, missing)
+                _cache_existing_images(conn, dataset, run, missing)
 
         return _get_image_rows(conn, run_id, version)
 
 
-def append_run_images(conn: sqlite3.Connection, run_id: str, count: int = DEFAULT_IMAGE_COUNT) -> list[sqlite3.Row]:
-    with _run_lock(run_id):
+def append_run_images(
+    conn: sqlite3.Connection,
+    dataset: DatasetConfig,
+    run_id: str,
+    count: int = DEFAULT_IMAGE_COUNT,
+) -> list[sqlite3.Row]:
+    with _run_lock(dataset, run_id):
         run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         if not run:
             raise ValueError(f"Unknown run_id: {run_id}")
@@ -52,7 +65,7 @@ def append_run_images(conn: sqlite3.Connection, run_id: str, count: int = DEFAUL
         conn.execute("UPDATE runs SET image_target_count = ? WHERE run_id = ?", (new_target, run_id))
         run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         rows = _get_image_rows(conn, run_id, int(run["selection_version"]))
-        _select_and_cache_images(conn, run, rows, new_target)
+        _select_and_cache_images(conn, dataset, run, rows, new_target)
         return _get_image_rows(conn, run_id, int(run["selection_version"]))
 
 
@@ -84,11 +97,106 @@ def _cached_path_exists(row: sqlite3.Row) -> bool:
     return bool(cache_path and (ROOT_DIR / cache_path).exists())
 
 
+def _manifest_key(tar_key: str) -> str:
+    base = tar_key
+    for ext in (".tar.gz", ".tar"):
+        if base.endswith(ext):
+            base = base[: -len(ext)]
+            break
+    return base + ".manifest.json"
+
+
+def _try_fetch_manifest(client, bucket: str, tar_key: str) -> list[ManifestFile] | None:
+    key = _manifest_key(tar_key)
+    try:
+        response = client.get_object(Bucket=bucket, Key=key)
+        data = json.loads(response["Body"].read())
+        return data["files"]
+    except client.exceptions.NoSuchKey:
+        return None
+    except Exception:
+        return None
+
+
+def _fetch_image_range(client, bucket: str, tar_key: str, entry: ManifestFile) -> bytes:
+    start = entry["tar_offset"]
+    end = start + entry["size"] - 1
+    response = client.get_object(Bucket=bucket, Key=tar_key, Range=f"bytes={start}-{end}")
+    return response["Body"].read()
+
+
 def _select_and_cache_images(
     conn: sqlite3.Connection,
+    dataset: DatasetConfig,
     run: sqlite3.Row,
     existing_rows: list[sqlite3.Row],
     target_count: int,
+) -> None:
+    client = get_s3_client(dataset)
+    manifest = _try_fetch_manifest(client, dataset.s3_bucket, run["tar_key"])
+
+    if manifest is not None:
+        _select_via_manifest(conn, dataset, run, existing_rows, target_count, manifest, client)
+    else:
+        _select_via_tar_stream(conn, dataset, run, existing_rows, target_count, client)
+
+
+def _select_via_manifest(
+    conn: sqlite3.Connection,
+    dataset: DatasetConfig,
+    run: sqlite3.Row,
+    existing_rows: list[sqlite3.Row],
+    target_count: int,
+    manifest: list[ManifestFile],
+    client,
+) -> None:
+    version = int(run["selection_version"])
+    next_index = len(existing_rows)
+    existing_members = {row["member_name"] for row in existing_rows}
+    missing_by_member = {row["member_name"]: row for row in existing_rows if not _cached_path_exists(row)}
+
+    # Re-cache any previously selected images that lost their local file
+    for member_name, row in missing_by_member.items():
+        entry = next((f for f in manifest if f["name"] == member_name), None)
+        if entry is None:
+            raise RuntimeError(f"Member {member_name} not found in manifest")
+        image_bytes = _fetch_image_range(client, dataset.s3_bucket, run["tar_key"], entry)
+        _cache_image_bytes(
+            conn,
+            dataset,
+            image_bytes,
+            run["run_id"],
+            version,
+            int(row["image_index"]),
+            int(row["id"]),
+        )
+
+    needed = max(0, target_count - next_index)
+    if needed == 0:
+        return
+
+    # Score all candidate images and pick the lowest-scoring N (deterministic sampling)
+    image_entries = [f for f in manifest if _is_image_member(f["name"]) and f["name"] not in existing_members]
+    scored = sorted((_member_random_score(run, f["name"]), f) for f in image_entries)
+    candidates = scored[:needed]
+
+    for _, entry in candidates:
+        image_id = _insert_image_row(conn, run["run_id"], version, next_index, entry["name"])
+        image_bytes = _fetch_image_range(client, dataset.s3_bucket, run["tar_key"], entry)
+        _cache_image_bytes(conn, dataset, image_bytes, run["run_id"], version, next_index, image_id)
+        next_index += 1
+
+    if next_index < target_count:
+        conn.execute("UPDATE runs SET image_target_count = ? WHERE run_id = ?", (next_index, run["run_id"]))
+
+
+def _select_via_tar_stream(
+    conn: sqlite3.Connection,
+    dataset: DatasetConfig,
+    run: sqlite3.Row,
+    existing_rows: list[sqlite3.Row],
+    target_count: int,
+    client,
 ) -> None:
     version = int(run["selection_version"])
     next_index = len(existing_rows)
@@ -98,8 +206,7 @@ def _select_and_cache_images(
     candidates: list[tuple[int, str, bytes]] = []
     worst_score: int | None = None
 
-    client = get_s3_client()
-    response = client.get_object(Bucket=S3_BUCKET, Key=run["tar_key"])
+    response = client.get_object(Bucket=dataset.s3_bucket, Key=run["tar_key"])
     with closing(response["Body"]):
         tar = tarfile.open(fileobj=response["Body"], mode="r|*")
         for member in tar:
@@ -113,6 +220,7 @@ def _select_and_cache_images(
                     raise RuntimeError(f"Could not extract {member.name}")
                 _cache_image_bytes(
                     conn,
+                    dataset,
                     source.read(),
                     run["run_id"],
                     version,
@@ -142,7 +250,7 @@ def _select_and_cache_images(
 
     for _, member_name, image_bytes in candidates:
         image_id = _insert_image_row(conn, run["run_id"], version, next_index, member_name)
-        _cache_image_bytes(conn, image_bytes, run["run_id"], version, next_index, image_id)
+        _cache_image_bytes(conn, dataset, image_bytes, run["run_id"], version, next_index, image_id)
         existing_members.add(member_name)
         next_index += 1
 
@@ -150,21 +258,57 @@ def _select_and_cache_images(
         conn.execute("UPDATE runs SET image_target_count = ? WHERE run_id = ?", (next_index, run["run_id"]))
 
 
-def _cache_existing_images(conn: sqlite3.Connection, run: sqlite3.Row, rows: list[sqlite3.Row]) -> None:
+def _cache_existing_images(
+    conn: sqlite3.Connection,
+    dataset: DatasetConfig,
+    run: sqlite3.Row,
+    rows: list[sqlite3.Row],
+) -> None:
     if not rows:
         return
 
-    wanted = {row["member_name"]: row for row in rows}
+    client = get_s3_client(dataset)
+    manifest = _try_fetch_manifest(client, dataset.s3_bucket, run["tar_key"])
     version = int(run["selection_version"])
-    client = get_s3_client()
-    response = client.get_object(Bucket=S3_BUCKET, Key=run["tar_key"])
+
+    if manifest is not None:
+        manifest_by_name = {f["name"]: f for f in manifest}
+        for row in rows:
+            entry = manifest_by_name.get(row["member_name"])
+            if entry is None:
+                raise RuntimeError(f"Member {row['member_name']} not found in manifest")
+            image_bytes = _fetch_image_range(client, dataset.s3_bucket, run["tar_key"], entry)
+            _cache_image_bytes(
+                conn,
+                dataset,
+                image_bytes,
+                run["run_id"],
+                version,
+                int(row["image_index"]),
+                int(row["id"]),
+            )
+        return
+
+    wanted = {row["member_name"]: row for row in rows}
+    response = client.get_object(Bucket=dataset.s3_bucket, Key=run["tar_key"])
     with closing(response["Body"]):
         tar = tarfile.open(fileobj=response["Body"], mode="r|*")
         for member in tar:
             if member.name not in wanted:
                 continue
             row = wanted.pop(member.name)
-            _cache_member(conn, tar, member, run["run_id"], version, int(row["image_index"]), int(row["id"]))
+            source = tar.extractfile(member)
+            if source is None:
+                raise RuntimeError(f"Could not extract {member.name}")
+            _cache_image_bytes(
+                conn,
+                dataset,
+                source.read(),
+                run["run_id"],
+                version,
+                int(row["image_index"]),
+                int(row["id"]),
+            )
             if not wanted:
                 break
 
@@ -189,40 +333,26 @@ def _member_random_score(run: sqlite3.Row, member_name: str) -> int:
     return int.from_bytes(hashlib.sha256(seed_input).digest()[:8], "big")
 
 
-def _run_lock(run_id: str) -> Lock:
+def _run_lock(dataset: DatasetConfig, run_id: str) -> Lock:
+    lock_key = f"{dataset.slug}:{run_id}"
     with _RUN_LOCKS_LOCK:
-        lock = _RUN_LOCKS.get(run_id)
+        lock = _RUN_LOCKS.get(lock_key)
         if lock is None:
             lock = Lock()
-            _RUN_LOCKS[run_id] = lock
+            _RUN_LOCKS[lock_key] = lock
         return lock
-
-
-def _cache_member(
-    conn: sqlite3.Connection,
-    tar: tarfile.TarFile,
-    member: tarfile.TarInfo,
-    run_id: str,
-    version: int,
-    image_index: int,
-    image_id: int,
-) -> None:
-    source = tar.extractfile(member)
-    if source is None:
-        raise RuntimeError(f"Could not extract {member.name}")
-
-    _cache_image_bytes(conn, source.read(), run_id, version, image_index, image_id)
 
 
 def _cache_image_bytes(
     conn: sqlite3.Connection,
+    dataset: DatasetConfig,
     image_bytes: bytes,
     run_id: str,
     version: int,
     image_index: int,
     image_id: int,
 ) -> None:
-    absolute_path = CACHE_DIR / run_id / f"v{version}" / f"{image_index + 1}.jpg"
+    absolute_path = dataset.cache_dir / run_id / f"v{version}" / f"{image_index + 1}.jpg"
     absolute_path.parent.mkdir(parents=True, exist_ok=True)
     with Image.open(io.BytesIO(image_bytes)) as image:
         image.convert("RGB").save(

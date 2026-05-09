@@ -4,7 +4,7 @@ from datetime import datetime
 
 import boto3
 
-from app.config import AWS_PROFILE, AWS_REGION, BATCH_PREFIXES, S3_BUCKET
+from app.config import DatasetConfig
 
 
 TAR_NAME_RE = re.compile(r"([^/]+)\.tar(?:\.gz)?$", re.IGNORECASE)
@@ -20,17 +20,17 @@ class S3RunObject:
     last_modified: datetime | None
 
 
-def get_s3_client():
-    session = boto3.Session(profile_name=AWS_PROFILE, region_name=AWS_REGION)
-    return session.client("s3", region_name=AWS_REGION)
+def get_s3_client(dataset: DatasetConfig):
+    session = boto3.Session(profile_name=dataset.aws_profile, region_name=dataset.aws_region)
+    return session.client("s3", region_name=dataset.aws_region)
 
 
-def list_run_tars() -> dict[str, S3RunObject]:
-    client = get_s3_client()
+def list_run_tars(dataset: DatasetConfig) -> dict[str, S3RunObject]:
+    client = get_s3_client(dataset)
     runs: dict[str, S3RunObject] = {}
-    for batch_name, prefix in BATCH_PREFIXES:
+    for batch_name, prefix in dataset.batch_prefixes:
         paginator = client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+        for page in paginator.paginate(Bucket=dataset.s3_bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 key = obj["Key"]
                 match = TAR_NAME_RE.search(key)

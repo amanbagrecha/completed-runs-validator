@@ -4,14 +4,26 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Completed Runs Validator</title>
-    <link rel="stylesheet" href="/static/app.css?v=9">
+    <link rel="stylesheet" href="/static/app.css?v=11">
   </head>
-  <body>
+  <body data-api-base="{{ api_base }}">
     <main>
       <header>
         <div>
-          <h1>Completed Runs Validator</h1>
+          <h1>{{ page_label }}</h1>
           <p>Pick a batch, load a small page, validate {{ image_count }} cached images per run.</p>
+          <p>
+            {% for nav_page in nav_pages %}
+              {% if nav_page.path == current_page_path %}
+                <strong>{{ nav_page.label }}</strong>
+              {% else %}
+                <a href="{{ nav_page.path }}">{{ nav_page.label }}</a>
+              {% endif %}
+              {% if not loop.last %}
+                |
+              {% endif %}
+            {% endfor %}
+          </p>
         </div>
         <button id="syncButton" type="button">Sync Metadata</button>
       </header>
@@ -116,6 +128,6 @@
         <img id="zoomImage" alt="Zoomed run image">
       </dialog>
     </main>
-    <script src="/static/app.js?v=9"></script>
+    <script src="/static/app.js?v=11"></script>
   </body>
 </html>

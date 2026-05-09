@@ -21,12 +21,12 @@ def fetch_done_runs() -> list[SheetRun]:
     runs: list[SheetRun] = []
     seen: set[str] = set()
     for row in rows:
-        run_id = (row.get("run_name") or "").strip()
+        run_id = (row.get("folder") or "").strip()
         if not run_id or run_id in seen:
             continue
         seen.add(run_id)
-        count_text = (row.get("count") or "").strip()
+        count_text = (row.get("wasabi_count") or "").strip()
         sheet_count = int(float(count_text)) if count_text else None
-        vehicle_type = (row.get("vehicle_type") or "").strip() or None
+        vehicle_type = (row.get("vehicle") or "").strip() or None
         runs.append(SheetRun(run_id, sheet_count, vehicle_type))
     return runs
