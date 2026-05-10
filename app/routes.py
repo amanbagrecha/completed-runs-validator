@@ -20,6 +20,7 @@ templates = Jinja2Templates(directory=str(ROOT_DIR / "app" / "templates"))
 class ValidationItem(BaseModel):
     image_id: int
     status: Literal["pass", "fail"]
+    notes: str = ""
 
 
 class ValidationRequest(BaseModel):
@@ -208,7 +209,7 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
             with get_conn(dataset.db_path) as conn:
                 saved = submit_validations(
                     conn,
-                    [{"image_id": item.image_id, "status": item.status} for item in payload.items],
+                    [{"image_id": item.image_id, "status": item.status, "notes": item.notes} for item in payload.items],
                 )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -247,6 +248,7 @@ def _image_to_dict(row, api_prefix: str):
         "cache_path": row["cache_path"],
         "cached_at": row["cached_at"],
         "status": row["status"],
+        "notes": row["notes"] or "",
         "file_url": f"{api_prefix}/images/{row['id']}/file",
     }
 

@@ -81,7 +81,7 @@ def _get_image_rows(conn: sqlite3.Connection, run_id: str, version: int) -> list
     return list(
         conn.execute(
             """
-            SELECT ri.*, iv.status
+            SELECT ri.*, iv.status, iv.notes
             FROM run_images ri
             LEFT JOIN image_validations iv ON iv.run_image_id = ri.id
             WHERE ri.run_id = ? AND ri.selection_version = ?

@@ -8,6 +8,7 @@ def submit_validations(conn: sqlite3.Connection, items: list[dict[str, int | str
     for item in items:
         image_id = int(item["image_id"])
         status = str(item["status"])
+        notes = str(item.get("notes", ""))
         if status not in {"pass", "fail"}:
             raise ValueError(f"Invalid status: {status}")
 
@@ -17,13 +18,14 @@ def submit_validations(conn: sqlite3.Connection, items: list[dict[str, int | str
 
         conn.execute(
             """
-            INSERT INTO image_validations (run_image_id, run_id, selection_version, status, submitted_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO image_validations (run_image_id, run_id, selection_version, status, notes, submitted_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(run_image_id) DO UPDATE SET
                 status = excluded.status,
+                notes = excluded.notes,
                 submitted_at = CURRENT_TIMESTAMP
             """,
-            (image_id, image["run_id"], image["selection_version"], status),
+            (image_id, image["run_id"], image["selection_version"], status, notes),
         )
         saved += 1
     return saved

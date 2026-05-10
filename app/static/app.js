@@ -235,8 +235,9 @@ function renderImagesForRun(tr, images) {
       slot.innerHTML = '<div class="empty image-empty">No image loaded.</div>';
       continue;
     }
-    const draftStatus = draftSelections.get(image.id);
-    const checkedStatus = draftStatus || image.status;
+    const draftSelection = draftSelections.get(image.id);
+    const checkedStatus = draftSelection?.status || image.status;
+    const notesValue = draftSelection?.notes ?? image.notes ?? "";
     slot.innerHTML = `
       <div class="thumb-card" data-image-id="${image.id}">
         <img src="${image.file_url}" alt="Run image ${image.image_index + 1}" loading="lazy">
@@ -246,15 +247,25 @@ function renderImagesForRun(tr, images) {
           <label><input type="radio" name="status-${image.id}" value="pass" ${checkedStatus === "pass" ? "checked" : ""}> Pass</label>
           <label><input type="radio" name="status-${image.id}" value="fail" ${checkedStatus === "fail" ? "checked" : ""}> Fail</label>
         </div>
+        <label class="thumb-notes-label">
+          Notes
+          <textarea name="notes-${image.id}" rows="3" placeholder="Optional notes">${escapeHtml(notesValue)}</textarea>
+        </label>
       </div>
     `;
     const img = slot.querySelector("img");
     img.addEventListener("click", () => openZoomForRun(runId, image.id));
-    slot.querySelectorAll("input").forEach((input) => input.addEventListener("change", () => {
-      draftSelections.set(image.id, input.value);
+    slot.querySelectorAll(`input[name="status-${image.id}"]`).forEach((input) => input.addEventListener("change", () => {
+      setDraftSelection(image.id, { status: input.value });
       markRunDraft(tr);
       updateSubmitState();
     }));
+    const notesField = slot.querySelector(`textarea[name="notes-${image.id}"]`);
+    notesField.addEventListener("input", () => {
+      setDraftSelection(image.id, { notes: notesField.value });
+      markRunDraft(tr);
+      updateSubmitState();
+    });
   }
   updateRunImageControls(tr, images);
 }
@@ -332,7 +343,7 @@ function setRunStatus(runId, status) {
 
   for (const image of images) {
     const input = document.querySelector(`input[name="status-${image.id}"][value="${status}"]`);
-    draftSelections.set(image.id, status);
+    setDraftSelection(image.id, { status });
     if (input) {
       input.checked = true;
     }
@@ -370,12 +381,14 @@ async function submitValidation() {
 }
 
 function applySubmittedValidations(items) {
-  const submittedByImageId = new Map(items.map((item) => [Number(item.image_id), item.status]));
+  const submittedByImageId = new Map(items.map((item) => [Number(item.image_id), item]));
   for (const [runId, images] of visibleImages.entries()) {
     let touched = false;
     for (const image of images) {
-      if (submittedByImageId.has(Number(image.id))) {
-        image.status = submittedByImageId.get(Number(image.id));
+      const submitted = submittedByImageId.get(Number(image.id));
+      if (submitted) {
+        image.status = submitted.status;
+        image.notes = submitted.notes || "";
         touched = true;
       }
     }
@@ -393,11 +406,13 @@ function applySubmittedValidations(items) {
 }
 
 function collectValidationItems() {
-  return Array.from(draftSelections.entries()).map(([imageId, status]) => ({ image_id: imageId, status }));
+  return Array.from(draftSelections.entries())
+    .filter(([, draft]) => draft.status)
+    .map(([imageId, draft]) => ({ image_id: imageId, status: draft.status, notes: draft.notes || "" }));
 }
 
 function updateSubmitState() {
-  const count = draftSelections.size;
+  const count = collectValidationItems().length;
   draftCount.textContent = `${count} selected`;
   submitButton.disabled = count === 0;
 }
@@ -472,6 +487,22 @@ function setSavedRunStatus(tr, images) {
   if (validationLabel) {
     validationLabel.textContent = `${validatedCount}/${images.length} validated`;
   }
+}
+
+function setDraftSelection(imageId, updates) {
+  const existing = draftSelections.get(imageId);
+  const next = {
+    status: existing?.status,
+    notes: existing?.notes ?? "",
+    ...updates,
+  };
+
+  if (!next.status && !next.notes) {
+    draftSelections.delete(imageId);
+    return;
+  }
+
+  draftSelections.set(imageId, next);
 }
 
 function openZoomForRun(runId, imageId) {

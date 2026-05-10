@@ -15,6 +15,18 @@ def init_db(db_path: Path) -> None:
     with get_conn(db_path) as conn:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(schema)
+        _migrate_image_validation_notes(conn)
+
+
+def _migrate_image_validation_notes(conn: sqlite3.Connection) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(image_validations)").fetchall()
+    }
+    if "notes" not in columns:
+        conn.execute("ALTER TABLE image_validations ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
+
+    conn.execute("UPDATE image_validations SET notes = '' WHERE notes IS NULL")
 
 
 @contextmanager

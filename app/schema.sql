@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS image_validations (
     run_id TEXT NOT NULL,
     selection_version INTEGER NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('pass', 'fail')),
+    notes TEXT NOT NULL DEFAULT '',
     submitted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(run_image_id) REFERENCES run_images(id) ON DELETE CASCADE,
     FOREIGN KEY(run_id) REFERENCES runs(run_id) ON DELETE CASCADE
