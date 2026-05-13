@@ -125,7 +125,7 @@ async function loadRuns(page) {
   updatePager();
 
   if (!data.runs.length) {
-    setMessage(`No runs found for ${batch}.`);
+    setMessage(`No runs found for ${selectedBatchLabel()}.`);
     return;
   }
 
@@ -156,6 +156,7 @@ function renderRunTable(runs) {
         <div class="run-id-badge">${escapeHtml(run.run_id)}</div>
         <div class="run-stats">
           <span class="status-label">${escapeHtml(run.status)}</span>
+          <span>batch ${escapeHtml(run.batch_name)}</span>
           <span class="validation-count-label">${run.validated_images}/${run.image_target_count} validated</span>
           <span class="image-count-label">${run.selected_images}/${run.image_target_count} images loaded</span>
           <span>count ${run.sheet_count ?? "n/a"}</span>
@@ -551,6 +552,10 @@ function cachedText(image) {
 function pageNumber() {
   const parsed = Number(pageInput.value || 1);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1;
+}
+
+function selectedBatchLabel() {
+  return batchSelect.value === "all" ? "all batches" : batchSelect.value;
 }
 
 function applyQueryParams() {

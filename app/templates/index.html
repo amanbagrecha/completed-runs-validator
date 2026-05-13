@@ -11,7 +11,7 @@
       <header>
         <div>
           <h1>{{ page_label }}</h1>
-          <p>Pick a batch, load a small page, validate {{ image_count }} cached images per run.</p>
+          <p>Pick a batch or all batches, load a small page, validate {{ image_count }} cached images per run.</p>
           <p>
             {% for nav_page in nav_pages %}
               {% if nav_page.path == current_page_path %}
@@ -34,6 +34,7 @@
             Batch
             <select id="batchSelect">
               <option value="">Select a batch</option>
+              <option value="all">All batches ({{ all_batch_count }})</option>
               {% for batch in batches %}
                 <option value="{{ batch.name }}">{{ batch.name }} ({{ batch.count }})</option>
               {% endfor %}
@@ -128,6 +129,6 @@
         <img id="zoomImage" alt="Zoomed run image">
       </dialog>
     </main>
-    <script src="/static/app.js?v=12"></script>
+    <script src="/static/app.js?v=13"></script>
   </body>
 </html>

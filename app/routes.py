@@ -33,18 +33,21 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
 
     @router.get(dataset.page_path)
     def index(request: Request):
+        batch_names = [name for name, _ in dataset.batch_prefixes]
         with get_conn(dataset.db_path) as conn:
             latest_sync = conn.execute("SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1").fetchone()
             batch_counts = {
                 row["batch_name"]: row["count"]
                 for row in conn.execute("SELECT batch_name, COUNT(*) AS count FROM runs GROUP BY batch_name")
             }
-        batches = [{"name": name, "count": batch_counts.get(name, 0)} for name, _ in dataset.batch_prefixes]
+        batches = [{"name": name, "count": batch_counts.get(name, 0)} for name in batch_names]
+        all_batch_count = sum(batch_counts.get(name, 0) for name in batch_names)
         return templates.TemplateResponse(
             request,
             "index.html",
             {
                 "batches": batches,
+                "all_batch_count": all_batch_count,
                 "latest_sync": latest_sync,
                 "image_count": DEFAULT_IMAGE_COUNT,
                 "api_base": dataset.api_prefix,
@@ -80,8 +83,15 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
         if page is not None:
             offset = (page - 1) * limit
 
-        base_params: list[str | int] = [batch]
-        where = ["r.batch_name = ?"]
+        batch_names = [name for name, _ in dataset.batch_prefixes]
+        base_params: list[str | int] = []
+        if batch == "all":
+            placeholders = ", ".join("?" for _ in batch_names)
+            where = [f"r.batch_name IN ({placeholders})"]
+            base_params.extend(batch_names)
+        else:
+            where = ["r.batch_name = ?"]
+            base_params.append(batch)
         if run_id.strip():
             where.append("r.run_id LIKE ?")
             base_params.append(f"%{run_id.strip()}%")
@@ -134,7 +144,7 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
                 SELECT *
                 FROM run_status
                 {status_where}
-                ORDER BY run_id
+                ORDER BY batch_name, run_id
                 LIMIT ? OFFSET ?
                 """,
                 [*base_params, *status_params, limit, offset],
