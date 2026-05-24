@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
 
@@ -14,8 +15,10 @@ AWS_CACHE_DIR = CACHE_ROOT_DIR / "aws-images"
 SHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1mfeHbvlI0CrT54WUC_stFTuXqg4a9a7YeVqZ5wHFbo8/"
-    "export?format=csv&gid=514978031"
+    "gviz/tq?tqx=out:csv&gid=514978031"
 )
+AUTH_FILE_PATH = DATA_DIR / "auth.txt"
+
 
 @dataclass(frozen=True)
 class DatasetConfig:
@@ -31,8 +34,22 @@ class DatasetConfig:
     batch_prefixes: list[tuple[str, str]]
 
 
+@dataclass(frozen=True)
+class AuthUser:
+    username: str
+    password: str
+
+
+@dataclass(frozen=True)
+class AuthConfig:
+    secret: str
+    users: tuple[AuthUser, ...]
+    cookie_name: str = "compltd_auth"
+    session_max_age_seconds: int = 60 * 60 * 12
+
+
 WASABI_BATCH_RANGE_START = 11
-WASABI_BATCH_RANGE_END = 50
+WASABI_BATCH_RANGE_END = 56
 WASABI_BATCH_PREFIXES = [
     (f"batch-{batch_number:02d}", f"batch-{batch_number:02d}/")
     for batch_number in range(WASABI_BATCH_RANGE_START, WASABI_BATCH_RANGE_END + 1)
@@ -47,7 +64,7 @@ AWS_BATCH_PREFIXES = [
 WASABI_DATASET = DatasetConfig(
     slug="wasabi",
     label="Wasabi Runs",
-    page_path="/",
+    page_path="/runreview",
     api_prefix="/api",
     db_path=DB_PATH,
     cache_dir=CACHE_DIR,
@@ -72,5 +89,51 @@ AWS_DATASET = DatasetConfig(
 
 DATASETS = (WASABI_DATASET, AWS_DATASET)
 
-DEFAULT_IMAGE_COUNT = 3
+DEFAULT_IMAGE_COUNT = 6
 JPEG_QUALITY = 75
+
+
+def _load_auth_file_values() -> dict[str, str]:
+    if not AUTH_FILE_PATH.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for raw_line in AUTH_FILE_PATH.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+_AUTH_FILE_VALUES = _load_auth_file_values()
+
+
+def _auth_value(name: str) -> str:
+    return os.getenv(name, _AUTH_FILE_VALUES.get(name, ""))
+
+
+def _load_auth_users() -> tuple[AuthUser, ...]:
+    users: list[AuthUser] = []
+    env_pairs = [
+        (_auth_value("COMPLTD_ADMIN_USERNAME"), _auth_value("COMPLTD_ADMIN_PASSWORD")),
+        (_auth_value("COMPLTD_USER_USERNAME"), _auth_value("COMPLTD_USER_PASSWORD")),
+    ]
+    seen: set[str] = set()
+    for username, password in env_pairs:
+        if not username and not password:
+            continue
+        if not username or not password:
+            continue
+        if username in seen:
+            continue
+        seen.add(username)
+        users.append(AuthUser(username=username, password=password))
+    return tuple(users)
+
+
+AUTH_CONFIG = AuthConfig(
+    secret=_auth_value("COMPLTD_AUTH_SECRET"),
+    users=_load_auth_users(),
+)
