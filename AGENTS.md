@@ -51,8 +51,9 @@ scripts/
 **Run status** is computed at query time (not stored):
 - `pending` — no images validated yet
 - `partial` — some validated, not all
-- `pass` — all required images validated, none failed
-- `fail` — at least one image failed
+- `ready` — all active images validated, reviewer has not completed the run yet
+- `pass` — reviewer completed the run and no active images failed
+- `fail` — reviewer completed the run and at least one active image failed
 
 ---
 
@@ -79,6 +80,8 @@ The app now serves two isolated validation surfaces that share the same code pat
 | `GET` | `/aws/api/runs/{run_id}/images` | Load/cache AWS sample images |
 | `POST` | `/api/runs/{run_id}/refresh-images` | Add more Wasabi images |
 | `POST` | `/aws/api/runs/{run_id}/refresh-images` | Add more AWS images |
+| `POST` | `/api/runs/{run_id}/complete` | Mark Wasabi run validation complete |
+| `POST` | `/aws/api/runs/{run_id}/complete` | Mark AWS run validation complete |
 | `GET` | `/api/images/{image_id}/file` | Serve cached Wasabi JPEG |
 | `GET` | `/aws/api/images/{image_id}/file` | Serve cached AWS JPEG |
 | `POST` | `/api/validations` | Submit Wasabi validations |
@@ -93,7 +96,7 @@ The app now serves two isolated validation surfaces that share the same code pat
 | `WASABI_DATASET` | `/`, `/api`, `data/app.db`, `data/cache/images/` | Current Wasabi-backed validator |
 | `AWS_DATASET` | `/aws`, `/aws/api`, `data/aws_app.db`, `data/cache/aws-images/` | Legacy AWS-backed validator |
 | `SHEET_CSV_URL` | Google Sheets export URL | Shared run manifest source |
-| `DEFAULT_IMAGE_COUNT` | `3` | Images sampled per run by default |
+| `DEFAULT_IMAGE_COUNT` | `6` | Images sampled per run by default |
 | `JPEG_QUALITY` | `75` | Compression level for cached thumbnails |
 
 ---

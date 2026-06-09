@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Completed Runs Validator</title>
-    <link rel="stylesheet" href="/static/app.css?v=12">
+    <link rel="stylesheet" href="/static/app.css?v=19">
   </head>
   <body data-api-base="{{ api_base }}">
     <main>
@@ -23,9 +23,17 @@
                 |
               {% endif %}
             {% endfor %}
+            |
+            <a href="{{ reports_page_path }}">Reports</a>
           </p>
         </div>
-        <button id="syncButton" type="button">Sync Metadata</button>
+        <div class="header-actions">
+          <div class="user-chip">Signed in as {{ current_user }}</div>
+          <form action="/logout" method="post">
+            <button type="submit" class="secondary-button">Logout</button>
+          </form>
+          <button id="syncButton" type="button">Sync Metadata</button>
+        </div>
       </header>
 
       <section class="panel controls-panel">
@@ -45,12 +53,21 @@
             <input id="runFilter" type="search" placeholder="Optional run_id">
           </label>
           <label>
+            Locality
+            <select id="localityCategoryFilter">
+              {% for category in locality_categories %}
+                <option value="{{ category.value }}">{{ category.label }} ({{ category.count }})</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
             Status
             <select id="statusFilter">
               <option value="all">All</option>
               <option value="unfinished">Unfinished</option>
               <option value="pending">Pending</option>
               <option value="partial">Partial</option>
+              <option value="ready">Ready</option>
               <option value="pass">Pass</option>
               <option value="fail">Fail</option>
               <option value="finished">Finished</option>
@@ -101,7 +118,9 @@
               <col class="col-image">
               <col class="col-image">
               <col class="col-image">
-              <col class="col-validate">
+              <col class="col-image">
+              <col class="col-image">
+              <col class="col-image">
             </colgroup>
             <thead>
               <tr>
@@ -109,11 +128,13 @@
                 <th>Image 1</th>
                 <th>Image 2</th>
                 <th>Image 3</th>
-                <th>Validate Run</th>
+                <th>Image 4</th>
+                <th>Image 5</th>
+                <th>Image 6</th>
               </tr>
             </thead>
             <tbody id="runsTableBody">
-              <tr><td colspan="5" class="empty">Select a batch to load runs.</td></tr>
+              <tr><td colspan="7" class="empty">Select a batch to load runs.</td></tr>
             </tbody>
           </table>
         </div>
@@ -129,6 +150,6 @@
         <img id="zoomImage" alt="Zoomed run image">
       </dialog>
     </main>
-    <script src="/static/app.js?v=13"></script>
+    <script src="/static/app.js?v=18"></script>
   </body>
 </html>

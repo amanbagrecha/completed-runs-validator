@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Completed Validation Reports</title>
+    <link rel="stylesheet" href="/static/app.css?v=19">
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>{{ page_label }} Reports</h1>
+          <p>Browse completed validation summaries, filter by batch, locality, or vehicle type, and export CSV without loading images.</p>
+          <p>
+            Validators:
+            {% for nav_page in validator_pages %}
+              {% if nav_page.path == validator_page_path %}
+                <strong>{{ nav_page.label }}</strong>
+              {% else %}
+                <a href="{{ nav_page.path }}">{{ nav_page.label }}</a>
+              {% endif %}
+              {% if not loop.last %}
+                |
+              {% endif %}
+            {% endfor %}
+          </p>
+          <p>
+            Reports:
+            {% for report_page in report_pages %}
+              {% if report_page.path == current_report_path %}
+                <strong>{{ report_page.label }}</strong>
+              {% else %}
+                <a href="{{ report_page.path }}">{{ report_page.label }}</a>
+              {% endif %}
+              {% if not loop.last %}
+                |
+              {% endif %}
+            {% endfor %}
+          </p>
+        </div>
+        <div class="header-actions">
+          <a href="{{ validator_page_path }}" class="secondary-link">Open Validator</a>
+          <div class="user-chip">Signed in as {{ current_user }}</div>
+          <form action="/logout" method="post">
+            <button type="submit" class="secondary-button">Logout</button>
+          </form>
+        </div>
+      </header>
+
+      <section class="panel controls-panel">
+        <form method="get" class="controls">
+          <label>
+            Batch
+            <select id="batchSelect" name="batch">
+              <option value="all" {% if selected_batch == "all" %}selected{% endif %}>All batches ({{ completed_run_count }})</option>
+              {% for batch in batches %}
+                <option value="{{ batch.name }}" {% if selected_batch == batch.name %}selected{% endif %}>{{ batch.name }} ({{ batch.count }})</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Locality
+            <select id="localityCategorySelect" name="locality_category">
+              {% for category in locality_categories %}
+                <option value="{{ category.value }}" {% if selected_locality_category == category.value %}selected{% endif %}>{{ category.label }} ({{ category.count }})</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Vehicle type
+            <select id="vehicleTypeSelect" name="vehicle_type">
+              <option value="all" {% if selected_vehicle_type == "all" %}selected{% endif %}>All vehicle types</option>
+              {% for vehicle_type in vehicle_types %}
+                <option value="{{ vehicle_type.name }}" {% if selected_vehicle_type == vehicle_type.name %}selected{% endif %}>{{ vehicle_type.name }} ({{ vehicle_type.count }})</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>
+            Run ID filter
+            <input id="runFilter" name="run_id" type="search" placeholder="Optional run_id" value="{{ run_id_filter }}">
+          </label>
+          <label>
+            Page size
+            <select id="limitSelect" name="limit">
+              <option value="10" {% if page_limit == 10 %}selected{% endif %}>10</option>
+              <option value="25" {% if page_limit == 25 %}selected{% endif %}>25</option>
+              <option value="50" {% if page_limit == 50 %}selected{% endif %}>50</option>
+              <option value="100" {% if page_limit == 100 %}selected{% endif %}>100</option>
+              <option value="250" {% if page_limit == 250 %}selected{% endif %}>250</option>
+            </select>
+          </label>
+          <label>
+            Page
+            <input id="pageInput" name="page" type="number" min="1" value="{{ current_page }}">
+          </label>
+          <button id="loadReportsButton" type="submit">Load Reports</button>
+          <a href="{{ download_csv_url }}" class="secondary-link">Download CSV</a>
+          {% if prev_page_url %}
+            <a href="{{ prev_page_url }}" class="secondary-link">Prev</a>
+          {% else %}
+            <span class="secondary-link secondary-link-disabled">Prev</span>
+          {% endif %}
+          {% if next_page_url %}
+            <a href="{{ next_page_url }}" class="secondary-link">Next</a>
+          {% else %}
+            <span class="secondary-link secondary-link-disabled">Next</span>
+          {% endif %}
+        </form>
+        <p id="message" class="message">
+          {% if report_rows %}
+            Showing completed validations for {{ page_label }}.
+          {% else %}
+            No completed validations found for the current filters.
+          {% endif %}
+        </p>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="table-toolbar">
+          <div>
+            <h2>Completed Validations</h2>
+            <span id="reportCount">{{ report_count_text }}</span>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="report-table">
+            <thead>
+              <tr>
+                <th>Run Name</th>
+                <th>Batch ID</th>
+                <th>Download Point</th>
+                <th>Vehicle Type</th>
+                <th>Locality</th>
+                <th>Region</th>
+                <th>Run ID</th>
+                <th>Total Images</th>
+                <th>Passed</th>
+                <th>Failed</th>
+                <th>Validation Images Done</th>
+                <th>Outcome</th>
+                <th>Completed By</th>
+              </tr>
+            </thead>
+            <tbody id="reportsTableBody">
+              {% if report_rows %}
+                {% for row in report_rows %}
+                  <tr>
+                    <td class="mono-cell">{{ row.run_name }}</td>
+                    <td>{{ row.batch_name }}</td>
+                    <td class="download-point-cell">{{ row.download_point }}</td>
+                    <td>{{ row.vehicle_type }}</td>
+                    <td>{{ row.locality_category }}{% if row.locality_name %} · {{ row.locality_name }}{% endif %}</td>
+                    <td>{{ row.region_id }}</td>
+                    <td class="mono-cell">{{ row.run_id }}</td>
+                    <td class="numeric-cell">{{ row.total_image_count if row.total_image_count is not none else "" }}</td>
+                    <td class="numeric-cell">{{ row.pass_images }}</td>
+                    <td class="numeric-cell">{{ row.fail_images }}</td>
+                    <td class="numeric-cell">{{ row.validated_images }}</td>
+                    <td>
+                      <div class="outcome-card outcome-{{ row.outcome }}">
+                        <span class="outcome-label">{{ row.outcome }}</span>
+                        <span class="outcome-detail">{{ row.outcome_detail }}</span>
+                      </div>
+                    </td>
+                    <td>{{ row.validation_completed_by }}</td>
+                  </tr>
+                {% endfor %}
+              {% else %}
+                <tr><td colspan="13" class="empty">No completed validations found.</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

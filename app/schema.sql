@@ -9,8 +9,19 @@ CREATE TABLE IF NOT EXISTS runs (
     source_scope TEXT NOT NULL,
     s3_size INTEGER,
     s3_last_modified TEXT,
+    total_image_count INTEGER,
     selection_version INTEGER NOT NULL DEFAULT 1,
-    image_target_count INTEGER NOT NULL DEFAULT 3,
+    image_target_count INTEGER NOT NULL DEFAULT 6,
+    validation_completed_at TEXT,
+    validation_completed_by TEXT,
+    validation_completed_selection_version INTEGER,
+    validation_completed_image_target_count INTEGER,
+    locality_name TEXT,
+    locality_category TEXT,
+    region_id TEXT,
+    subtype_label TEXT,
+    dispatch_hold TEXT,
+    pipeline_status TEXT,
     indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

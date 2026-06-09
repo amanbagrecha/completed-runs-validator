@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ page_label }} Review</title>
+    <link rel="stylesheet" href="/static/review.css?v=4">
+  </head>
+  <body data-api-base="{{ api_base }}">
+    <main class="review-app">
+      <div class="review-layout">
+        <aside class="sidebar">
+          <header class="topbar">
+            <div class="brand-block">
+              <h1>{{ page_label }} Review</h1>
+              <p>One image at a time.</p>
+            </div>
+
+            <div class="topbar-actions">
+              <nav class="page-links" aria-label="Review pages">
+                {% for review_page in review_pages %}
+                  {% if review_page.path == current_page_path %}
+                    <span class="page-link page-link-active">{{ review_page.label }}</span>
+                  {% else %}
+                    <a class="page-link" href="{{ review_page.path }}">{{ review_page.label }}</a>
+                  {% endif %}
+                {% endfor %}
+              </nav>
+              <a class="page-link" href="{{ validator_page_path }}">Full Validator</a>
+              <a class="page-link" href="{{ reports_page_path }}">Reports</a>
+              <span class="user-chip">{{ current_user }}</span>
+              <form action="/logout" method="post">
+                <button type="submit" class="ghost-button">Logout</button>
+              </form>
+            </div>
+
+            <section class="filters" aria-label="Review filters">
+              <div class="state-tabs" role="tablist" aria-label="Review state">
+                <button type="button" class="state-tab state-tab-active" data-state="unreviewed">Unreviewed</button>
+                <button type="button" class="state-tab" data-state="submitted">Submitted</button>
+                <button type="button" class="state-tab" data-state="pass">Passed</button>
+                <button type="button" class="state-tab" data-state="fail">Failed</button>
+                <button type="button" class="state-tab" data-state="all">All</button>
+              </div>
+              <input id="stateInput" type="hidden" value="unreviewed">
+              <label>
+                Batch
+                <select id="batchSelect">
+                  <option value="all">All batches</option>
+                  {% for batch in batches %}
+                    <option value="{{ batch }}">{{ batch }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>
+                Locality
+                <select id="localityCategoryFilter">
+                  {% for category in locality_categories %}
+                    <option value="{{ category.value }}">{{ category.label }} ({{ category.count }})</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>
+                Run ID
+                <input id="runFilter" type="search" placeholder="Optional run_id">
+              </label>
+              <button id="loadButton" type="button">Load Images</button>
+            </section>
+
+            <section class="stats-panel" aria-label="Review statistics">
+              <div class="stats-header">
+                <h2>Progress</h2>
+                <span id="statsUpdatedAt">Loading...</span>
+              </div>
+              <div class="stats-grid">
+                <div class="stat-card">
+                  <span>Total Runs</span>
+                  <strong id="totalRunsStat">-</strong>
+                </div>
+                <div class="stat-card">
+                  <span>Completed</span>
+                  <strong id="completedRunsStat">-</strong>
+                </div>
+                <div class="stat-card">
+                  <span>In Progress</span>
+                  <strong id="inProgressRunsStat">-</strong>
+                </div>
+                <div class="stat-card">
+                  <span>Not Started</span>
+                  <strong id="notStartedRunsStat">-</strong>
+                </div>
+                <div class="stat-card">
+                  <span>Images Done</span>
+                  <strong id="validatedImagesStat">-</strong>
+                </div>
+                <div class="stat-card">
+                  <span>Passed</span>
+                  <strong id="passImagesStat">-</strong>
+                </div>
+                <div class="stat-card">
+                  <span>Failed</span>
+                  <strong id="failImagesStat">-</strong>
+                </div>
+                <div class="stat-card">
+                  <span>Fail Rate</span>
+                  <strong id="failRateStat">-</strong>
+                </div>
+              </div>
+              <div class="batch-stats-wrap">
+                <table class="batch-stats-table">
+                  <thead>
+                    <tr>
+                      <th>Batch</th>
+                      <th>Done</th>
+                      <th>Active</th>
+                      <th>Imgs</th>
+                    </tr>
+                  </thead>
+                  <tbody id="batchStatsBody">
+                    <tr><td colspan="4">Loading stats...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <p id="message" class="message">Load unreviewed images to begin.</p>
+          </header>
+        </aside>
+
+        <section class="viewer-shell">
+          <div class="viewer-panel">
+            <div class="viewer-layout">
+              <div class="viewer-main">
+                <div id="imageFrame" class="image-frame">
+                  <img id="currentImage" alt="Validation image">
+                  <div id="emptyState" class="empty-state">No images loaded.</div>
+                </div>
+
+                <div class="viewer-info-row">
+                  <p id="imageMeta" class="image-meta"></p>
+                  <p id="queueSummary" class="queue-summary"></p>
+                </div>
+              </div>
+
+              <div class="side-rail side-rail-right">
+                <div class="decision-grid">
+                  <button id="prevButton" type="button" class="ghost-button">Previous</button>
+                  <button id="nextButton" type="button" class="ghost-button">Next</button>
+                  <button id="failButton" type="button" class="decision-button decision-button-fail">Fail</button>
+                  <button id="passButton" type="button" class="decision-button decision-button-pass">Pass</button>
+                </div>
+
+                <div id="failOptions" class="fail-options" hidden>
+                  <button id="minorBugButton" type="button" class="decision-button decision-button-bug">Minor Bug</button>
+                  <button id="majorBugButton" type="button" class="decision-button decision-button-bug">Major Bug</button>
+                </div>
+                <label class="notes-field">
+                  <span>Notes</span>
+                  <textarea id="notesInput" rows="2" placeholder="Optional notes"></textarea>
+                </label>
+                <p id="failValidation" class="fail-validation" hidden></p>
+                <div id="draftSummary" class="draft-summary">0 drafts</div>
+                <button id="submitButton" type="button">Submit Drafts</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+    <script src="/static/review.js?v=4"></script>
+  </body>
+</html>
