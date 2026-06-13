@@ -62,6 +62,7 @@ class GoogleSheetClient:
         self.credentials_path = credentials_path
         self._access_token: str | None = None
         self._sheet_title: str | None = None
+        self._expanded: bool = False
 
     @classmethod
     def from_config(cls) -> GoogleSheetClient | None:
@@ -82,12 +83,7 @@ class GoogleSheetClient:
         return data.get("values", [])
 
     def write_values(self, cell_range: str, values: list[list[str]]) -> None:
-        encoded_range = urllib.parse.quote(self._a1_range(cell_range), safe="")
-        self._request(
-            "PUT",
-            f"/values/{encoded_range}?valueInputOption=USER_ENTERED",
-            {"values": values},
-        )
+        self.batch_write_values([(cell_range, values)])
 
     def batch_write_values(self, updates: list[tuple[str, list[list[str]]]]) -> None:
         if not updates:
@@ -157,6 +153,40 @@ class GoogleSheetClient:
             self._access_token = credentials.token
         return self._access_token
 
+    def _expand_grid_if_needed(self, required_columns: int) -> None:
+        if self._expanded:
+            return
+        metadata = self._request("GET", "?fields=sheets.properties(sheetId,gridProperties(columnCount),title)")
+        target_title = self._sheet_title_value()
+        for sheet in metadata.get("sheets", []):
+            properties = sheet.get("properties", {})
+            if str(properties.get("title", "")) == target_title:
+                current_cols = properties.get("gridProperties", {}).get("columnCount", 0)
+                real_sheet_id = int(properties.get("sheetId", -1))
+                if current_cols < required_columns:
+                    new_cols = max(required_columns, current_cols + 8)
+                    self._request(
+                        "POST",
+                        "/:batchUpdate",
+                        {
+                            "requests": [
+                                {
+                                    "updateSheetProperties": {
+                                        "properties": {
+                                            "sheetId": real_sheet_id,
+                                            "gridProperties": {
+                                                "columnCount": new_cols,
+                                            },
+                                        },
+                                        "fields": "gridProperties.columnCount",
+                                    }
+                                }
+                            ]
+                        },
+                    )
+                break
+        self._expanded = True
+
 
 def write_run_completion(
     payload: CompletionWriteback,
@@ -189,6 +219,9 @@ def _write_fields(run_id: str, fields: dict[str, str], client: SheetClient) -> S
         raise RuntimeError("Google Sheet has no header row")
 
     headers = [str(value).strip() for value in values[0]]
+    required_columns = len(headers) + len([c for c in APP_SHEET_COLUMNS if c not in headers])
+    if hasattr(client, "_expand_grid_if_needed"):
+        client._expand_grid_if_needed(required_columns)
     _ensure_app_headers(headers, client)
     header_index = {header: index for index, header in enumerate(headers)}
     if "folder" not in header_index:
@@ -237,6 +270,127 @@ def _column_letter(index: int) -> str:
 def _credentials_path() -> Path | None:
     value = os.getenv("COMPLTD_GOOGLE_CREDENTIALS") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     return Path(value).expanduser() if value else DEFAULT_CREDENTIALS_PATH
+
+
+def write_run_progress(
+    run_id: str,
+    validator: str,
+    *,
+    client: SheetClient | None = None,
+) -> SheetWriteResult:
+    if client is None:
+        client = GoogleSheetClient.from_config()
+    if client is None:
+        return SheetWriteResult(status="disabled", detail="Google service-account JSON not found")
+    now = _utc_now()
+    return _write_fields(
+        run_id,
+        {
+            "compltd_status": "in_progress",
+            "compltd_validator": validator,
+            "compltd_started_at": now,
+            "compltd_updated_at": now,
+        },
+        client,
+    )
+
+
+def sync_all_completions(
+    conn,
+    completed_by: str,
+    *,
+    client: SheetClient | None = None,
+) -> dict[str, int]:
+    if client is None:
+        client = GoogleSheetClient.from_config()
+    if client is None:
+        return {"disabled": 1}
+
+    rows = conn.execute(
+        """
+        WITH completed AS (
+            SELECT
+                r.run_id,
+                r.compltd_status,
+                COALESCE(r.validation_completed_selection_version, r.selection_version) AS completed_selection_version,
+                COALESCE(r.validation_completed_image_target_count, r.image_target_count) AS completed_image_target_count
+            FROM runs r
+            WHERE r.validation_completed_at IS NOT NULL
+              AND LOWER(COALESCE(TRIM(r.compltd_status), '')) <> 'completed'
+        )
+        SELECT
+            c.run_id,
+            COUNT(DISTINCT iv.id) AS reviewed_images,
+            COALESCE(SUM(CASE WHEN iv.status = 'fail' THEN 1 ELSE 0 END), 0) AS failed_images
+        FROM completed c
+        LEFT JOIN run_images ri
+            ON ri.run_id = c.run_id
+            AND ri.selection_version = c.completed_selection_version
+            AND ri.image_index < c.completed_image_target_count
+        LEFT JOIN image_validations iv ON iv.run_image_id = ri.id
+        GROUP BY c.run_id
+        """,
+    ).fetchall()
+
+    summary: dict[str, int] = {}
+    for row in rows:
+        run_id = row["run_id"]
+        reviewed_images = int(row["reviewed_images"] or 0)
+        failed_images = int(row["failed_images"] or 0)
+        outcome, _ = _report_outcome(failed_images, reviewed_images)
+        try:
+            result = write_run_completion(
+                CompletionWriteback(
+                    run_id=run_id,
+                    validator=completed_by,
+                    completed_at=_utc_now(),
+                    outcome=outcome,
+                    reviewed_images=reviewed_images,
+                    failed_images=failed_images,
+                ),
+                client=client,
+            )
+            summary[result.status] = summary.get(result.status, 0) + 1
+            if result.status == "updated":
+                conn.execute(
+                    """
+                    UPDATE runs
+                    SET compltd_status = 'completed',
+                        compltd_validator = ?,
+                        compltd_completed_at = ?,
+                        compltd_outcome = ?,
+                        compltd_reviewed_images = ?,
+                        compltd_failed_images = ?,
+                        compltd_updated_at = ?
+                    WHERE run_id = ?
+                    """,
+                    (
+                        completed_by,
+                        result.row_number,
+                        outcome,
+                        reviewed_images,
+                        failed_images,
+                        _utc_now(),
+                        run_id,
+                    ),
+                )
+        except Exception:
+            summary["error"] = summary.get("error", 0) + 1
+
+    return summary
+
+
+def _report_outcome(failed_images: int, reviewed_images: int) -> tuple[str, str]:
+    if reviewed_images <= 0:
+        return "retry", "0/0 reviewed"
+    failure_rate = failed_images / reviewed_images
+    outcome = "approved" if failure_rate < 0.10 else "retry"
+    return outcome, f"{failed_images}/{reviewed_images} failed ({failure_rate:.1%})"
+
+
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _spreadsheet_id_from_url(url: str) -> str | None:

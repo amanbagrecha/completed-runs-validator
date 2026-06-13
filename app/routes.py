@@ -28,7 +28,7 @@ from app.services.image_cache import (
     review_image_target,
 )
 from app.services.sheets import is_compltd_completed, is_existing_sheet_validation_complete
-from app.services.sheet_writeback import CompletionWriteback, SheetWriteResult, write_run_completion
+from app.services.sheet_writeback import CompletionWriteback, SheetWriteResult, sync_all_completions, write_run_completion, write_run_progress
 from app.services.sync import sync_runs
 from app.services.validations import complete_run_validation, maybe_complete_run_validation, submit_validations
 
@@ -277,6 +277,7 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
     def sync_metadata():
         with get_conn(dataset.db_path) as conn:
             summary = sync_runs(conn, dataset)
+            sheet_sync_summary = sync_all_completions(conn, "system")
         return {
             "sheet_runs": summary.sheet_runs,
             "s3_runs": summary.s3_runs,
@@ -285,6 +286,7 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
             "extra_in_s3": len(summary.extra_in_s3),
             "missing_sample": summary.missing_in_s3[:10],
             "extra_sample": summary.extra_in_s3[:10],
+            "sheet_sync": sheet_sync_summary,
         }
 
     @router.get(f"{dataset.api_prefix}/runs")
@@ -526,6 +528,8 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
                         sheet_sync_results.append(
                             _sync_completion_to_sheet(conn, run_id, getattr(request.state, "user", None))
                         )
+                    else:
+                        _sync_progress_to_sheet(run_id, getattr(request.state, "user", None))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -1286,6 +1290,13 @@ def _completion_writeback_payload(conn, run_id: str, completed_by: str | None) -
 
 def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _sync_progress_to_sheet(run_id: str, validator: str | None) -> None:
+    try:
+        write_run_progress(run_id, validator or "unknown")
+    except Exception:
+        pass
 
 
 def _sheet_sync_summary(results: list[SheetWriteResult]) -> dict[str, int]:
