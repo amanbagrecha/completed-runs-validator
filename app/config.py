@@ -48,7 +48,7 @@ class AuthConfig:
     session_max_age_seconds: int = 60 * 60 * 12
 
 
-WASABI_BATCH_RANGE_START = 11
+WASABI_BATCH_RANGE_START = 1
 WASABI_BATCH_RANGE_END = 57
 WASABI_BATCH_PREFIXES = [
     (f"batch-{batch_number:02d}", f"batch-{batch_number:02d}/")
@@ -88,6 +88,7 @@ AWS_DATASET = DatasetConfig(
 )
 
 DATASETS = (WASABI_DATASET, AWS_DATASET)
+UI_DATASETS = (WASABI_DATASET,)
 
 DEFAULT_IMAGE_COUNT = 6
 JPEG_QUALITY = 75

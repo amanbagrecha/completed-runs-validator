@@ -28,7 +28,8 @@ tmux, and prints the `/review` links.
 ## Behavior
 
 - Uses the configured Google Sheet CSV export as the run list.
-- Indexes S3 tar files from `panoramic_clean/`, `batch2/`, and `batch-03/` through `batch-10/`.
+- Indexes Wasabi tar files from `batch-01/` through `batch-57/`.
+- Legacy AWS routes remain available directly, but AWS is hidden from the normal UI navigation.
 - Does not rely on `tar_image_counts.csv`.
 - Only extracts images for the run you open.
 - Caches selected images under `data/cache/images/` as JPEG quality `75`.

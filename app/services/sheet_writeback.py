@@ -338,12 +338,13 @@ def sync_all_completions(
         reviewed_images = int(row["reviewed_images"] or 0)
         failed_images = int(row["failed_images"] or 0)
         outcome, _ = _report_outcome(failed_images, reviewed_images)
+        completed_at = _utc_now()
         try:
             result = write_run_completion(
                 CompletionWriteback(
                     run_id=run_id,
                     validator=completed_by,
-                    completed_at=_utc_now(),
+                    completed_at=completed_at,
                     outcome=outcome,
                     reviewed_images=reviewed_images,
                     failed_images=failed_images,
@@ -366,11 +367,11 @@ def sync_all_completions(
                     """,
                     (
                         completed_by,
-                        result.row_number,
+                        completed_at,
                         outcome,
                         reviewed_images,
                         failed_images,
-                        _utc_now(),
+                        completed_at,
                         run_id,
                     ),
                 )

@@ -30,7 +30,7 @@ def list_run_tars(dataset: DatasetConfig) -> dict[str, S3RunObject]:
     runs: dict[str, S3RunObject] = {}
     for batch_name, prefix in dataset.batch_prefixes:
         paginator = client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=dataset.s3_bucket, Prefix=prefix):
+        for page in paginator.paginate(Bucket=dataset.s3_bucket, Prefix=prefix, Delimiter="/"):
             for obj in page.get("Contents", []):
                 key = obj["Key"]
                 match = TAR_NAME_RE.search(key)

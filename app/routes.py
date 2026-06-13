@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from starlette.templating import Jinja2Templates
 
-from app.config import DATASETS, DEFAULT_IMAGE_COUNT, DatasetConfig, ROOT_DIR
+from app.config import DATASETS, DEFAULT_IMAGE_COUNT, DatasetConfig, ROOT_DIR, UI_DATASETS
 from app.auth import authenticate, clear_auth_cookie, set_auth_cookie
 from app.db import get_conn
 from app.services.image_cache import (
@@ -115,9 +115,9 @@ def _review_page_path(dataset: DatasetConfig) -> str:
 
 def create_router(dataset: DatasetConfig) -> APIRouter:
     router = APIRouter()
-    nav_pages = [{"label": item.label, "path": item.page_path} for item in DATASETS]
-    review_pages = [{"label": f"{item.label} Review", "path": _review_page_path(item)} for item in DATASETS]
-    report_pages = [{"label": f"{item.label} Reports", "path": _report_page_path(item)} for item in DATASETS]
+    nav_pages = [{"label": item.label, "path": item.page_path} for item in UI_DATASETS]
+    review_pages = [{"label": f"{item.label} Review", "path": _review_page_path(item)} for item in UI_DATASETS]
+    report_pages = [{"label": f"{item.label} Reports", "path": _report_page_path(item)} for item in UI_DATASETS]
     reports_page_path = _report_page_path(dataset)
     review_page_path = _review_page_path(dataset)
 
