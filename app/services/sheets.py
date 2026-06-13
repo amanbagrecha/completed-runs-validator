@@ -17,6 +17,19 @@ class SheetRun:
     subtype_label: str | None
     dispatch_hold: str | None
     pipeline_status: str | None
+    sheet_validation: str | None
+    compltd_status: str | None
+    compltd_validator: str | None
+    compltd_started_at: str | None
+    compltd_completed_at: str | None
+    compltd_outcome: str | None
+    compltd_reviewed_images: int | None
+    compltd_failed_images: int | None
+    compltd_updated_at: str | None
+
+
+EXISTING_SHEET_COMPLETE_VALUES = {"approved", "retry"}
+COMPLTD_COMPLETE_STATUS = "completed"
 
 
 def fetch_done_runs() -> list[SheetRun]:
@@ -46,6 +59,15 @@ def fetch_done_runs() -> list[SheetRun]:
                 subtype_label=_clean(row.get("subtype_label")),
                 dispatch_hold=_clean(row.get("dispatch_hold")),
                 pipeline_status=_clean(row.get("pipeline_status")),
+                sheet_validation=_clean(row.get("validation")),
+                compltd_status=_clean(row.get("compltd_status")),
+                compltd_validator=_clean(row.get("compltd_validator")),
+                compltd_started_at=_clean(row.get("compltd_started_at")),
+                compltd_completed_at=_clean(row.get("compltd_completed_at")),
+                compltd_outcome=_clean(row.get("compltd_outcome")),
+                compltd_reviewed_images=_clean_int(row.get("compltd_reviewed_images")),
+                compltd_failed_images=_clean_int(row.get("compltd_failed_images")),
+                compltd_updated_at=_clean(row.get("compltd_updated_at")),
             )
         )
     return runs
@@ -54,3 +76,24 @@ def fetch_done_runs() -> list[SheetRun]:
 def _clean(value: str | None) -> str | None:
     value = (value or "").strip()
     return value or None
+
+
+def _clean_int(value: str | None) -> int | None:
+    value = (value or "").strip()
+    return int(float(value)) if value else None
+
+
+def sheet_run_is_globally_completed(run: SheetRun) -> bool:
+    return is_existing_sheet_validation_complete(run.sheet_validation) or is_compltd_completed(run.compltd_status)
+
+
+def is_existing_sheet_validation_complete(value: str | None) -> bool:
+    return _normalized(value) in EXISTING_SHEET_COMPLETE_VALUES
+
+
+def is_compltd_completed(value: str | None) -> bool:
+    return _normalized(value) == COMPLTD_COMPLETE_STATUS
+
+
+def _normalized(value: str | None) -> str:
+    return (value or "").strip().lower()

@@ -41,9 +41,12 @@ def sync_runs(conn: sqlite3.Connection, dataset: DatasetConfig) -> SyncSummary:
                 run_id, sheet_count, vehicle_type, batch_name, tar_key, source_scope,
                 s3_size, s3_last_modified, image_target_count, locality_name,
                 locality_category, region_id, subtype_label, dispatch_hold,
-                pipeline_status, indexed_at
+                pipeline_status, sheet_validation, compltd_status, compltd_validator,
+                compltd_started_at, compltd_completed_at, compltd_outcome,
+                compltd_reviewed_images, compltd_failed_images, compltd_updated_at,
+                indexed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(run_id) DO UPDATE SET
                 sheet_count = excluded.sheet_count,
                 vehicle_type = excluded.vehicle_type,
@@ -53,6 +56,15 @@ def sync_runs(conn: sqlite3.Connection, dataset: DatasetConfig) -> SyncSummary:
                 subtype_label = excluded.subtype_label,
                 dispatch_hold = excluded.dispatch_hold,
                 pipeline_status = excluded.pipeline_status,
+                sheet_validation = excluded.sheet_validation,
+                compltd_status = excluded.compltd_status,
+                compltd_validator = excluded.compltd_validator,
+                compltd_started_at = excluded.compltd_started_at,
+                compltd_completed_at = excluded.compltd_completed_at,
+                compltd_outcome = excluded.compltd_outcome,
+                compltd_reviewed_images = excluded.compltd_reviewed_images,
+                compltd_failed_images = excluded.compltd_failed_images,
+                compltd_updated_at = excluded.compltd_updated_at,
                 batch_name = excluded.batch_name,
                 tar_key = excluded.tar_key,
                 source_scope = excluded.source_scope,
@@ -92,6 +104,15 @@ def sync_runs(conn: sqlite3.Connection, dataset: DatasetConfig) -> SyncSummary:
                 sheet_run.subtype_label if sheet_run else None,
                 sheet_run.dispatch_hold if sheet_run else None,
                 sheet_run.pipeline_status if sheet_run else None,
+                sheet_run.sheet_validation if sheet_run else None,
+                sheet_run.compltd_status if sheet_run else None,
+                sheet_run.compltd_validator if sheet_run else None,
+                sheet_run.compltd_started_at if sheet_run else None,
+                sheet_run.compltd_completed_at if sheet_run else None,
+                sheet_run.compltd_outcome if sheet_run else None,
+                sheet_run.compltd_reviewed_images if sheet_run else None,
+                sheet_run.compltd_failed_images if sheet_run else None,
+                sheet_run.compltd_updated_at if sheet_run else None,
             ),
         )
 

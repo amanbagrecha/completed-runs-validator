@@ -1,0 +1,9 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "command": {
+    "start-validator": {
+      "description": "Start the validator server in tmux and show review links.",
+      "prompt": "Start the Completed Runs Validator from the repository root. Run `bash scripts/start_validator_tmux.sh`, then report the Local URL, Network URL, and tmux attach command from the script output. If the script reports missing environment or auth settings, explain the exact missing setting. Do not commit or print service-account JSON contents."
+    }
+  }
+}

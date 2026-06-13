@@ -22,6 +22,15 @@ CREATE TABLE IF NOT EXISTS runs (
     subtype_label TEXT,
     dispatch_hold TEXT,
     pipeline_status TEXT,
+    sheet_validation TEXT,
+    compltd_status TEXT,
+    compltd_validator TEXT,
+    compltd_started_at TEXT,
+    compltd_completed_at TEXT,
+    compltd_outcome TEXT,
+    compltd_reviewed_images INTEGER,
+    compltd_failed_images INTEGER,
+    compltd_updated_at TEXT,
     indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

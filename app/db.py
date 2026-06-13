@@ -21,6 +21,7 @@ def init_db(db_path: Path) -> None:
         _migrate_default_image_target_count(conn)
         _migrate_image_validation_notes(conn)
         _migrate_run_sheet_metadata(conn)
+        _migrate_sheet_coordination_columns(conn)
 
 
 def _migrate_runs_total_image_count(conn: sqlite3.Connection) -> None:
@@ -94,6 +95,27 @@ def _migrate_run_sheet_metadata(conn: sqlite3.Connection) -> None:
         "subtype_label": "ALTER TABLE runs ADD COLUMN subtype_label TEXT",
         "dispatch_hold": "ALTER TABLE runs ADD COLUMN dispatch_hold TEXT",
         "pipeline_status": "ALTER TABLE runs ADD COLUMN pipeline_status TEXT",
+    }
+    for column, statement in migrations.items():
+        if column not in columns:
+            conn.execute(statement)
+
+
+def _migrate_sheet_coordination_columns(conn: sqlite3.Connection) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+    }
+    migrations = {
+        "sheet_validation": "ALTER TABLE runs ADD COLUMN sheet_validation TEXT",
+        "compltd_status": "ALTER TABLE runs ADD COLUMN compltd_status TEXT",
+        "compltd_validator": "ALTER TABLE runs ADD COLUMN compltd_validator TEXT",
+        "compltd_started_at": "ALTER TABLE runs ADD COLUMN compltd_started_at TEXT",
+        "compltd_completed_at": "ALTER TABLE runs ADD COLUMN compltd_completed_at TEXT",
+        "compltd_outcome": "ALTER TABLE runs ADD COLUMN compltd_outcome TEXT",
+        "compltd_reviewed_images": "ALTER TABLE runs ADD COLUMN compltd_reviewed_images INTEGER",
+        "compltd_failed_images": "ALTER TABLE runs ADD COLUMN compltd_failed_images INTEGER",
+        "compltd_updated_at": "ALTER TABLE runs ADD COLUMN compltd_updated_at TEXT",
     }
     for column, statement in migrations.items():
         if column not in columns:

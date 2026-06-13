@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import parse_qs, urlencode
 
@@ -26,6 +27,8 @@ from app.services.image_cache import (
     queue_run_image_prefetch,
     review_image_target,
 )
+from app.services.sheets import is_compltd_completed, is_existing_sheet_validation_complete
+from app.services.sheet_writeback import CompletionWriteback, SheetWriteResult, write_run_completion
 from app.services.sync import sync_runs
 from app.services.validations import complete_run_validation, maybe_complete_run_validation, submit_validations
 
@@ -310,6 +313,7 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
             where.append("r.run_id LIKE ?")
             base_params.append(f"%{run_id.strip()}%")
         _append_locality_category_filter(where, base_params, locality_category)
+        _append_sheet_availability_filter(where)
 
         aggregate_sql = _run_status_cte(" AND ".join(where))
 
@@ -372,12 +376,15 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
     def get_run_images(run_id: str):
         try:
             with get_conn(dataset.db_path) as conn:
+                _ensure_run_available(conn, run_id)
                 images = ensure_run_images(conn, dataset, run_id)
                 ensure_manifest_image_count(conn, dataset, run_id)
                 run = _fetch_run_status(conn, run_id)
                 prefetched_images = count_prefetched_images(conn, run_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -392,12 +399,15 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
     def refresh_run_images(run_id: str):
         try:
             with get_conn(dataset.db_path) as conn:
+                _ensure_run_available(conn, run_id)
                 ensure_manifest_image_count(conn, dataset, run_id)
                 images = append_run_images(conn, dataset, run_id, DEFAULT_IMAGE_COUNT)
                 run = _fetch_run_status(conn, run_id)
                 prefetched_images = count_prefetched_images(conn, run_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PermissionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -413,6 +423,7 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
         try:
             with get_conn(dataset.db_path) as conn:
                 complete_run_validation(conn, run_id, getattr(request.state, "user", None))
+                sheet_sync = _sync_completion_to_sheet(conn, run_id, getattr(request.state, "user", None))
                 run = _fetch_run_status(conn, run_id)
         except ValueError as exc:
             status_code = 404 if str(exc).startswith("Unknown run_id") else 400
@@ -420,7 +431,7 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-        return {"run": _run_to_dict(run)}
+        return {"run": _run_to_dict(run), "sheet_sync": sheet_sync.status}
 
     @router.get(f"{dataset.api_prefix}/images/{{image_id}}/file")
     def image_file(image_id: int):
@@ -508,9 +519,13 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
                     items,
                 )
                 completed_runs = 0
+                sheet_sync_results: list[SheetWriteResult] = []
                 for run_id in run_ids:
                     if maybe_complete_run_validation(conn, run_id, getattr(request.state, "user", None)):
                         completed_runs += 1
+                        sheet_sync_results.append(
+                            _sync_completion_to_sheet(conn, run_id, getattr(request.state, "user", None))
+                        )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -519,6 +534,7 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
         return {
             "saved": saved,
             "completed_runs": completed_runs,
+            "sheet_sync": _sheet_sync_summary(sheet_sync_results),
         }
 
     return router
@@ -598,6 +614,25 @@ def _fetch_run_status(conn, run_id: str):
     if not row:
         raise ValueError(f"Unknown run_id: {run_id}")
     return row
+
+
+def _ensure_run_available(conn, run_id: str) -> None:
+    row = conn.execute(
+        """
+        SELECT run_id, validation_completed_at, sheet_validation, compltd_status
+        FROM runs
+        WHERE run_id = ?
+        """,
+        (run_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Unknown run_id: {run_id}")
+    if row["validation_completed_at"] is not None:
+        return
+    if is_existing_sheet_validation_complete(row["sheet_validation"]):
+        raise PermissionError("Run is already marked complete in the existing Google Sheet validation column")
+    if is_compltd_completed(row["compltd_status"]):
+        raise PermissionError("Run is already marked complete in the app-owned Google Sheet columns")
 
 
 def _prepare_review_images(
@@ -797,6 +832,7 @@ def _review_run_filters(dataset: DatasetConfig, batch: str, run_id: str, localit
         where.append("r.run_id LIKE ?")
         params.append(f"%{run_id.strip()}%")
     _append_locality_category_filter(where, params, locality_category)
+    _append_sheet_availability_filter(where)
 
     return " AND ".join(where), params
 
@@ -1162,6 +1198,101 @@ def _append_locality_category_filter(where: list[str], params: list[str | int], 
         return
     where.append("r.locality_category = ?")
     params.append(value)
+
+
+def _append_sheet_availability_filter(where: list[str]) -> None:
+    where.append(
+        """
+        (
+            r.validation_completed_at IS NOT NULL
+            OR (
+                LOWER(COALESCE(TRIM(r.sheet_validation), '')) NOT IN ('approved', 'retry')
+                AND LOWER(COALESCE(TRIM(r.compltd_status), '')) <> 'completed'
+            )
+        )
+        """
+    )
+
+
+def _sync_completion_to_sheet(conn, run_id: str, completed_by: str | None) -> SheetWriteResult:
+    payload = _completion_writeback_payload(conn, run_id, completed_by)
+    result = write_run_completion(payload)
+    if result.status == "updated":
+        conn.execute(
+            """
+            UPDATE runs
+            SET compltd_status = 'completed',
+                compltd_validator = ?,
+                compltd_completed_at = ?,
+                compltd_outcome = ?,
+                compltd_reviewed_images = ?,
+                compltd_failed_images = ?,
+                compltd_updated_at = ?
+            WHERE run_id = ?
+            """,
+            (
+                payload.validator,
+                payload.completed_at,
+                payload.outcome,
+                payload.reviewed_images,
+                payload.failed_images,
+                payload.completed_at,
+                run_id,
+            ),
+        )
+    return result
+
+
+def _completion_writeback_payload(conn, run_id: str, completed_by: str | None) -> CompletionWriteback:
+    row = conn.execute(
+        """
+        WITH completed AS (
+            SELECT
+                run_id,
+                COALESCE(validation_completed_selection_version, selection_version) AS completed_selection_version,
+                COALESCE(validation_completed_image_target_count, image_target_count) AS completed_image_target_count
+            FROM runs
+            WHERE run_id = ?
+        )
+        SELECT
+            c.run_id,
+            COUNT(DISTINCT iv.id) AS reviewed_images,
+            COALESCE(SUM(CASE WHEN iv.status = 'fail' THEN 1 ELSE 0 END), 0) AS failed_images
+        FROM completed c
+        LEFT JOIN run_images ri
+            ON ri.run_id = c.run_id
+            AND ri.selection_version = c.completed_selection_version
+            AND ri.image_index < c.completed_image_target_count
+        LEFT JOIN image_validations iv ON iv.run_image_id = ri.id
+        GROUP BY c.run_id
+        """,
+        (run_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Unknown run_id: {run_id}")
+
+    reviewed_images = int(row["reviewed_images"] or 0)
+    failed_images = int(row["failed_images"] or 0)
+    outcome, _ = _report_outcome(failed_images, reviewed_images)
+    return CompletionWriteback(
+        run_id=run_id,
+        validator=completed_by or "unknown",
+        completed_at=_utc_timestamp(),
+        outcome=outcome,
+        reviewed_images=reviewed_images,
+        failed_images=failed_images,
+    )
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _sheet_sync_summary(results: list[SheetWriteResult]) -> dict[str, int]:
+    summary: dict[str, int] = {}
+    for result in results:
+        summary[result.status] = summary.get(result.status, 0) + 1
+    return summary
 
 
 def _validation_report_csv_response(dataset: DatasetConfig, rows: list[dict[str, object]]) -> Response:
