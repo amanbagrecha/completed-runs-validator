@@ -525,9 +525,12 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
                 for run_id in run_ids:
                     if maybe_complete_run_validation(conn, run_id, getattr(request.state, "user", None)):
                         completed_runs += 1
-                        sheet_sync_results.append(
-                            _sync_completion_to_sheet(conn, run_id, getattr(request.state, "user", None))
-                        )
+                        try:
+                            sheet_sync_results.append(
+                                _sync_completion_to_sheet(conn, run_id, getattr(request.state, "user", None))
+                            )
+                        except Exception:
+                            sheet_sync_results.append(SheetWriteResult(status="error"))
                     else:
                         _sync_progress_to_sheet(run_id, getattr(request.state, "user", None))
         except ValueError as exc:
