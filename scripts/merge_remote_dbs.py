@@ -17,16 +17,22 @@ For `run_images` and `image_validations`: INSERT OR IGNORE on unique constraints
 """
 
 import argparse
+import http.cookiejar
+import json
 import os
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
 SSH_KEY = os.path.expanduser("~/.ssh/id_ed25519")
 LOCAL_DB = str(Path(__file__).resolve().parents[1] / "data" / "app.db")
+AUTH_FILE = Path(__file__).resolve().parents[1] / "data" / "auth.txt"
+LOCAL_API_URL = "http://127.0.0.1:8123"
 
 DEFAULT_REMOTES = [
     "ec2-user@100.119.159.28:/home/ec2-user/completed-runs-validator/data/app.db",
@@ -166,10 +172,38 @@ def merge_image_validations(local: sqlite3.Connection, remote: sqlite3.Connectio
     return inserted
 
 
+def _read_auth() -> tuple[str, str]:
+    config: dict[str, str] = {}
+    if AUTH_FILE.exists():
+        for line in AUTH_FILE.read_text().splitlines():
+            if "=" in line:
+                k, _, v = line.partition("=")
+                config[k.strip()] = v.strip()
+    username = config.get("COMPLTD_ADMIN_USERNAME", "admin")
+    password = config.get("COMPLTD_ADMIN_PASSWORD", "")
+    return username, password
+
+
+def trigger_sheet_sync() -> dict:
+    username, password = _read_auth()
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+
+    login_data = urllib.parse.urlencode(
+        {"username": username, "password": password, "next_path": "/review"}
+    ).encode("utf-8")
+    opener.open(urllib.request.Request(f"{LOCAL_API_URL}/login", data=login_data, method="POST"))
+
+    req = urllib.request.Request(f"{LOCAL_API_URL}/api/sync", method="POST")
+    with opener.open(req) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Merge remote validator DBs into local orchestrator DB")
     parser.add_argument("--remotes", nargs="+", default=DEFAULT_REMOTES, metavar="USER@HOST:/path/app.db")
     parser.add_argument("--dry-run", action="store_true", help="Show what would change without writing")
+    parser.add_argument("--sheet-sync", action="store_true", help="After merging, flush pending completions to Google Sheets via /api/sync")
     args = parser.parse_args()
 
     label = "[DRY RUN] " if args.dry_run else ""
@@ -209,7 +243,21 @@ def main() -> None:
             os.unlink(tmp)
 
     local.close()
-    print(f"\n{label}Merge complete at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    print(f"\n{label}Merge complete at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    if args.sheet_sync and not args.dry_run:
+        print("\n--- Sheet sync ---")
+        try:
+            result = trigger_sheet_sync()
+            sheet = result.get("sheet_sync", {})
+            if sheet:
+                for status, count in sheet.items():
+                    print(f"  {status}: {count}")
+            else:
+                print("  nothing to sync")
+        except Exception as e:
+            print(f"  ERROR: {e}", file=sys.stderr)
+    print()
 
 
 if __name__ == "__main__":
