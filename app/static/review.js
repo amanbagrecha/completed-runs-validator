@@ -436,7 +436,7 @@ async function refreshQueue({ background }) {
 
     applyQueueUpdate(data.images || [], { resetDrafts: !background });
     const pendingRuns = Number(data.pending_runs || 0);
-    if (pendingRuns > 0) {
+    if (pendingRuns > 0 && queue.length === 0) {
       scheduleQueueRefresh();
     } else {
       stopQueueRefresh();
@@ -613,8 +613,8 @@ function loadMessage(data, becameAvailableInBackground) {
   }
   if (pendingRuns > 0) {
     return becameAvailableInBackground
-      ? "Images are ready. More runs are still loading in the background."
-      : "Images loaded. More runs are still loading in the background.";
+      ? "Images are ready. More runs will prepare as this queue is submitted."
+      : "Images loaded. More runs will prepare as this queue is submitted.";
   }
   return skippedRuns ? "Images loaded. Some runs were skipped." : "Images loaded.";
 }

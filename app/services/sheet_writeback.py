@@ -298,6 +298,89 @@ def write_run_progress(
     )
 
 
+def write_run_batch(
+    completions: list[CompletionWriteback],
+    progress_runs: list[tuple[str, str]],
+    *,
+    client: SheetClient | None = None,
+) -> dict[str, SheetWriteResult]:
+    """Write completion and/or progress fields for many runs with a single
+    sheet read and a single batched write.
+
+    Returns a mapping of ``run_id`` -> :class:`SheetWriteResult`. A run present
+    in both ``completions`` and ``progress_runs`` is treated as a completion.
+    Returns an empty mapping when sheet writeback is disabled (no credentials).
+    """
+    if client is None:
+        client = GoogleSheetClient.from_config()
+    if client is None:
+        return {}
+
+    run_fields: dict[str, dict[str, str]] = {}
+    for payload in completions:
+        run_fields[payload.run_id] = {
+            "compltd_status": "completed",
+            "compltd_validator": payload.validator,
+            "compltd_completed_at": payload.completed_at,
+            "compltd_outcome": payload.outcome,
+            "compltd_reviewed_images": str(payload.reviewed_images),
+            "compltd_failed_images": str(payload.failed_images),
+            "compltd_updated_at": payload.completed_at,
+        }
+    for run_id, validator in progress_runs:
+        if run_id in run_fields:
+            continue
+        now = _utc_now()
+        run_fields[run_id] = {
+            "compltd_status": "in_progress",
+            "compltd_validator": validator,
+            "compltd_started_at": now,
+            "compltd_updated_at": now,
+        }
+
+    if not run_fields:
+        return {}
+
+    values = client.read_values()
+    if not values:
+        raise RuntimeError("Google Sheet has no header row")
+
+    headers = [str(value).strip() for value in values[0]]
+    required_columns = len(headers) + len([c for c in APP_SHEET_COLUMNS if c not in headers])
+    if hasattr(client, "_expand_grid_if_needed"):
+        client._expand_grid_if_needed(required_columns)
+    _ensure_app_headers(headers, client)
+    header_index = {header: index for index, header in enumerate(headers)}
+    if "folder" not in header_index:
+        raise RuntimeError("Google Sheet is missing required 'folder' column")
+
+    folder_index = header_index["folder"]
+    row_by_run: dict[str, int] = {}
+    for row_number, row in enumerate(values[1:], start=2):
+        if folder_index < len(row):
+            key = str(row[folder_index]).strip()
+            if key and key not in row_by_run:
+                row_by_run[key] = row_number
+
+    results: dict[str, SheetWriteResult] = {}
+    updates: list[tuple[str, list[list[str]]]] = []
+    for run_id, fields in run_fields.items():
+        row_number = row_by_run.get(run_id)
+        if row_number is None:
+            results[run_id] = SheetWriteResult(status="missing", detail=f"Run {run_id} not found in sheet")
+            continue
+        for column, value in fields.items():
+            if column in APP_SHEET_COLUMNS:
+                updates.append(
+                    (f"{_column_letter(header_index[column] + 1)}{row_number}", [[value]])
+                )
+        results[run_id] = SheetWriteResult(status="updated", row_number=row_number)
+
+    if updates:
+        client.batch_write_values(updates)
+    return results
+
+
 def sync_all_completions(
     conn,
     completed_by: str,

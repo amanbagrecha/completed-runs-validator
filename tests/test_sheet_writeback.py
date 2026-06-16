@@ -12,6 +12,7 @@ from app.services.sheet_writeback import (
     CompletionWriteback,
     GoogleSheetClient,
     sync_all_completions,
+    write_run_batch,
     write_run_completion,
 )
 
@@ -35,6 +36,102 @@ class FakeSheetClient:
 
     def batch_write_values(self, updates: list[tuple[str, list[list[str]]]]) -> None:
         self.cell_writes.extend(updates)
+
+
+class CountingSheetClient:
+    """FakeSheetClient with several folders that counts read/write round-trips."""
+
+    def __init__(self) -> None:
+        self.values = [
+            ["folder", "validation"],
+            ["run-1", "approved"],
+            ["run-2", ""],
+            ["run-3", ""],
+        ]
+        self.read_count = 0
+        self.batch_write_count = 0
+        self.cell_writes: list[tuple[str, list[list[str]]]] = []
+
+    def read_values(self) -> list[list[str]]:
+        self.read_count += 1
+        return self.values
+
+    def write_values(self, cell_range: str, values: list[list[str]]) -> None:
+        self.values[0].extend(values[0])
+
+    def batch_write_values(self, updates: list[tuple[str, list[list[str]]]]) -> None:
+        self.batch_write_count += 1
+        self.cell_writes.extend(updates)
+
+
+class WriteRunBatchTests(unittest.TestCase):
+    def test_batch_reads_once_and_writes_once_for_many_runs(self) -> None:
+        client = CountingSheetClient()
+
+        results = write_run_batch(
+            [
+                CompletionWriteback(
+                    run_id="run-1",
+                    validator="alice",
+                    completed_at="2026-01-01T00:10:00Z",
+                    outcome="approved",
+                    reviewed_images=6,
+                    failed_images=0,
+                ),
+                CompletionWriteback(
+                    run_id="run-2",
+                    validator="alice",
+                    completed_at="2026-01-01T00:11:00Z",
+                    outcome="retry",
+                    reviewed_images=6,
+                    failed_images=3,
+                ),
+            ],
+            [("run-3", "alice")],
+            client=client,
+        )
+
+        # The whole point: one read, one batched write regardless of run count.
+        self.assertEqual(client.read_count, 1)
+        self.assertEqual(client.batch_write_count, 1)
+        self.assertEqual(results["run-1"].status, "updated")
+        self.assertEqual(results["run-2"].status, "updated")
+        self.assertEqual(results["run-3"].status, "updated")
+        # run-3 is progress-only -> in_progress, run-1/run-2 -> completed.
+        written = {cell_range: values[0][0] for cell_range, values in client.cell_writes}
+        statuses = {value for cell_range, value in written.items()}
+        self.assertIn("completed", statuses)
+        self.assertIn("in_progress", statuses)
+
+    def test_batch_reports_missing_runs_without_failing_others(self) -> None:
+        client = CountingSheetClient()
+
+        results = write_run_batch(
+            [
+                CompletionWriteback(
+                    run_id="run-1",
+                    validator="alice",
+                    completed_at="2026-01-01T00:10:00Z",
+                    outcome="approved",
+                    reviewed_images=6,
+                    failed_images=0,
+                ),
+                CompletionWriteback(
+                    run_id="ghost",
+                    validator="alice",
+                    completed_at="2026-01-01T00:10:00Z",
+                    outcome="approved",
+                    reviewed_images=6,
+                    failed_images=0,
+                ),
+            ],
+            [],
+            client=client,
+        )
+
+        self.assertEqual(results["run-1"].status, "updated")
+        self.assertEqual(results["ghost"].status, "missing")
+        self.assertEqual(client.batch_write_count, 1)
 
 
 class SheetWritebackTests(unittest.TestCase):

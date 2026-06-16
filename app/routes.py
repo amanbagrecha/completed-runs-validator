@@ -3,11 +3,12 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import logging
 from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import parse_qs, urlencode
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from starlette.templating import Jinja2Templates
@@ -28,10 +29,18 @@ from app.services.image_cache import (
     review_image_target,
 )
 from app.services.sheets import is_compltd_completed, is_existing_sheet_validation_complete
-from app.services.sheet_writeback import CompletionWriteback, SheetWriteResult, sync_all_completions, write_run_completion, write_run_progress
+from app.services.sheet_writeback import (
+    CompletionWriteback,
+    SheetWriteResult,
+    sync_all_completions,
+    write_run_batch,
+    write_run_completion,
+)
 from app.services.sync import sync_runs
 from app.services.validations import complete_run_validation, maybe_complete_run_validation, submit_validations
 
+
+logger = logging.getLogger(__name__)
 
 templates = Jinja2Templates(directory=str(ROOT_DIR / "app" / "templates"))
 auth_router = APIRouter()
@@ -43,6 +52,8 @@ LOCALITY_CATEGORY_OPTIONS = [
     ("rural", "Rural"),
     ("unknown", "Unknown"),
 ]
+REVIEW_READY_IMAGE_BUFFER = DEFAULT_IMAGE_COUNT * 4
+REVIEW_BACKGROUND_RUN_LIMIT = 3
 
 
 @auth_router.get("/login")
@@ -490,10 +501,15 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
             return _review_stats(conn, dataset, batch, run_id, locality_category)
 
     @router.post(f"{dataset.api_prefix}/review/submit")
-    def submit_review_image(payload: ReviewSubmissionRequest, request: Request):
+    def submit_review_image(
+        payload: ReviewSubmissionRequest,
+        request: Request,
+        background_tasks: BackgroundTasks,
+    ):
         if not payload.items:
             raise HTTPException(status_code=400, detail="No review items submitted")
 
+        validator = getattr(request.state, "user", None)
         try:
             with get_conn(dataset.db_path) as conn:
                 run_ids = []
@@ -521,30 +537,92 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
                     items,
                 )
                 completed_runs = 0
-                sheet_sync_results: list[SheetWriteResult] = []
+                completion_payloads: list[CompletionWriteback] = []
+                progress_run_ids: list[str] = []
                 for run_id in run_ids:
-                    if maybe_complete_run_validation(conn, run_id, getattr(request.state, "user", None)):
+                    if maybe_complete_run_validation(conn, run_id, validator):
                         completed_runs += 1
-                        try:
-                            sheet_sync_results.append(
-                                _sync_completion_to_sheet(conn, run_id, getattr(request.state, "user", None))
-                            )
-                        except Exception:
-                            sheet_sync_results.append(SheetWriteResult(status="error"))
+                        completion_payloads.append(
+                            _completion_writeback_payload(conn, run_id, validator)
+                        )
                     else:
-                        _sync_progress_to_sheet(run_id, getattr(request.state, "user", None))
+                        progress_run_ids.append(run_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+        # Google Sheets writeback is slow (network round-trips per run), so defer
+        # it off the request path. The DB is the source of truth; the sheet is a
+        # mirror that catches up a moment later (and via /sync-remote-dbs).
+        scheduled = len(completion_payloads) + len(progress_run_ids)
+        if scheduled:
+            background_tasks.add_task(
+                _sync_runs_to_sheet,
+                dataset.db_path,
+                completion_payloads,
+                [(run_id, validator or "unknown") for run_id in progress_run_ids],
+            )
+
         return {
             "saved": saved,
             "completed_runs": completed_runs,
-            "sheet_sync": _sheet_sync_summary(sheet_sync_results),
+            "sheet_sync": {"scheduled": scheduled},
         }
 
     return router
+
+
+def _sync_runs_to_sheet(
+    db_path,
+    completion_payloads: list[CompletionWriteback],
+    progress_runs: list[tuple[str, str]],
+) -> None:
+    """Background task: write completion/progress for a batch of runs to the
+    Google Sheet in one shared client (single auth + read + batched write),
+    then mirror the completed statuses back into the DB."""
+    if not completion_payloads and not progress_runs:
+        return
+    try:
+        results = write_run_batch(completion_payloads, progress_runs)
+    except Exception:
+        logger.exception("background sheet sync failed")
+        return
+
+    completed = [
+        payload
+        for payload in completion_payloads
+        if results.get(payload.run_id) is not None and results[payload.run_id].status == "updated"
+    ]
+    if not completed:
+        return
+    try:
+        with get_conn(db_path) as conn:
+            for payload in completed:
+                conn.execute(
+                    """
+                    UPDATE runs
+                    SET compltd_status = 'completed',
+                        compltd_validator = ?,
+                        compltd_completed_at = ?,
+                        compltd_outcome = ?,
+                        compltd_reviewed_images = ?,
+                        compltd_failed_images = ?,
+                        compltd_updated_at = ?
+                    WHERE run_id = ?
+                    """,
+                    (
+                        payload.validator,
+                        payload.completed_at,
+                        payload.outcome,
+                        payload.reviewed_images,
+                        payload.failed_images,
+                        payload.completed_at,
+                        payload.run_id,
+                    ),
+                )
+    except Exception:
+        logger.exception("failed to mirror compltd_status to DB after sheet sync")
 
 
 def _run_to_dict(row):
@@ -673,13 +751,18 @@ def _prepare_review_images(
     _sync_review_image_targets(conn, _list_review_run_rows(conn, dataset, batch, run_id, locality_category))
     run_rows = _ordered_review_run_rows(_list_review_run_rows(conn, dataset, batch, run_id, locality_category))
     pending_runs = 0
+    queued_runs = 0
+    ready_rows = _list_review_image_rows(conn, dataset, batch, run_id, locality_category, state, skipped_runs)
     for row in run_rows:
         if row["run_id"] in skipped_runs:
             continue
         if not _review_run_is_pending(row):
             continue
-        queue_run_image_ensure(dataset, row["run_id"])
         pending_runs += 1
+        if len(ready_rows) >= REVIEW_READY_IMAGE_BUFFER or queued_runs >= REVIEW_BACKGROUND_RUN_LIMIT:
+            continue
+        queue_run_image_ensure(dataset, row["run_id"])
+        queued_runs += 1
 
     return skipped_runs, pending_runs
 
@@ -1293,20 +1376,6 @@ def _completion_writeback_payload(conn, run_id: str, completed_by: str | None) -
 
 def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _sync_progress_to_sheet(run_id: str, validator: str | None) -> None:
-    try:
-        write_run_progress(run_id, validator or "unknown")
-    except Exception:
-        pass
-
-
-def _sheet_sync_summary(results: list[SheetWriteResult]) -> dict[str, int]:
-    summary: dict[str, int] = {}
-    for result in results:
-        summary[result.status] = summary.get(result.status, 0) + 1
-    return summary
 
 
 def _validation_report_csv_response(dataset: DatasetConfig, rows: list[dict[str, object]]) -> Response:
