@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import urllib.parse
@@ -8,6 +9,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+
+logger = logging.getLogger(__name__)
 
 from app.config import ROOT_DIR, SHEET_CSV_URL
 
@@ -376,6 +379,7 @@ def sync_all_completions(
                     ),
                 )
         except Exception:
+            logger.exception("sheet sync failed for run_id=%s", run_id)
             summary["error"] = summary.get("error", 0) + 1
 
     return summary

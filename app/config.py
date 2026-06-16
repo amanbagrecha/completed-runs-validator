@@ -45,7 +45,7 @@ class AuthConfig:
     secret: str
     users: tuple[AuthUser, ...]
     cookie_name: str = "compltd_auth"
-    session_max_age_seconds: int = 60 * 60 * 12
+    session_max_age_seconds: int = 60 * 60 * 24 * 100
 
 
 WASABI_BATCH_RANGE_START = 1

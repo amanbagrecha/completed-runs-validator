@@ -57,6 +57,19 @@ def col_names(conn: sqlite3.Connection, table: str) -> list[str]:
     return [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
 
 
+# The local validation facts. Unlike the compltd_* summary (which is synced via the
+# Google Sheet and arbitrated by compltd_updated_at), these are only ever written
+# locally on the machine where a run is validated and are monotonic: once a run is
+# validated it stays validated. We merge them separately so they are filled in from a
+# source DB whenever the local DB lacks them, and never overwritten or wiped.
+VALIDATION_FACT_COLS = [
+    "validation_completed_at",
+    "validation_completed_by",
+    "validation_completed_selection_version",
+    "validation_completed_image_target_count",
+]
+
+
 def merge_runs(local: sqlite3.Connection, remote: sqlite3.Connection, dry_run: bool) -> tuple[int, int]:
     remote_cols = col_names(remote, "runs")
     local_cols = col_names(local, "runs")
@@ -66,8 +79,15 @@ def merge_runs(local: sqlite3.Connection, remote: sqlite3.Connection, dry_run: b
     shared_cols = [c for c in remote_cols if c in local_cols]
     shared_col_str = ", ".join(shared_cols)
     placeholders = ", ".join(["?"] * len(shared_cols))
-    set_clause = ", ".join(f"{c} = ?" for c in shared_cols if c != "run_id")
     local_col_str = ", ".join(local_cols)
+
+    # compltd_* summary fields are merged via the timestamp comparison below; the
+    # validation facts are handled on their own (fill-if-missing) so the summary
+    # overwrite can never clobber a validation_completed_at the local DB already has.
+    summary_cols = [c for c in shared_cols if c != "run_id" and c not in VALIDATION_FACT_COLS]
+    summary_set_clause = ", ".join(f"{c} = ?" for c in summary_cols)
+    validation_cols = [c for c in VALIDATION_FACT_COLS if c in shared_cols]
+    validation_set_clause = ", ".join(f"{c} = ?" for c in validation_cols)
 
     updated = inserted = skipped = 0
 
@@ -82,26 +102,36 @@ def merge_runs(local: sqlite3.Connection, remote: sqlite3.Connection, dry_run: b
                 vals = [rd[c] for c in shared_cols]
                 local.execute(f"INSERT INTO runs ({shared_col_str}) VALUES ({placeholders})", vals)
             inserted += 1
+            continue
+
+        ld = dict(zip(local_cols, local_row))
+        r_completed = rd.get("compltd_completed_at")
+        l_completed = ld.get("compltd_completed_at")
+        r_updated = str(rd.get("compltd_updated_at") or "")
+        l_updated = str(ld.get("compltd_updated_at") or "")
+
+        take_summary = (
+            (r_completed and not l_completed)
+            or (r_completed and l_completed and r_updated > l_updated)
+            or (not r_completed and not l_completed and r_updated > l_updated)
+        )
+        # Pull validation facts from the source whenever the local DB is missing them,
+        # independent of the compltd_* timestamp (which ties when both sides share the
+        # same sheet-sourced value).
+        fill_validation = bool(rd.get("validation_completed_at")) and not ld.get("validation_completed_at")
+
+        if not dry_run:
+            if take_summary and summary_cols:
+                vals = [rd[c] for c in summary_cols] + [run_id]
+                local.execute(f"UPDATE runs SET {summary_set_clause} WHERE run_id = ?", vals)
+            if fill_validation and validation_cols:
+                vals = [rd[c] for c in validation_cols] + [run_id]
+                local.execute(f"UPDATE runs SET {validation_set_clause} WHERE run_id = ?", vals)
+
+        if take_summary or fill_validation:
+            updated += 1
         else:
-            ld = dict(zip(local_cols, local_row))
-            r_completed = rd.get("compltd_completed_at")
-            l_completed = ld.get("compltd_completed_at")
-            r_updated = str(rd.get("compltd_updated_at") or "")
-            l_updated = str(ld.get("compltd_updated_at") or "")
-
-            take_remote = (
-                (r_completed and not l_completed)
-                or (r_completed and l_completed and r_updated > l_updated)
-                or (not r_completed and not l_completed and r_updated > l_updated)
-            )
-
-            if take_remote:
-                if not dry_run:
-                    vals = [rd[c] for c in shared_cols if c != "run_id"] + [run_id]
-                    local.execute(f"UPDATE runs SET {set_clause} WHERE run_id = ?", vals)
-                updated += 1
-            else:
-                skipped += 1
+            skipped += 1
 
     return inserted + updated, skipped
 
