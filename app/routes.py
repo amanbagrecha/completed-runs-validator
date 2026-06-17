@@ -19,10 +19,10 @@ from app.db import get_conn
 from app.services.image_cache import (
     append_run_images,
     count_prefetched_images,
+    ensure_image_cached,
     ensure_manifest_image_count,
     ensure_run_images,
     ensure_run_images_to_count,
-    get_image_file_path,
     prefetch_target_for_total,
     queue_run_image_ensure,
     queue_run_image_prefetch,
@@ -448,8 +448,13 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
 
     @router.get(f"{dataset.api_prefix}/images/{{image_id}}/file")
     def image_file(image_id: int):
-        with get_conn(dataset.db_path) as conn:
-            path = get_image_file_path(conn, image_id)
+        try:
+            with get_conn(dataset.db_path) as conn:
+                path = ensure_image_cached(conn, dataset, image_id)
+        except Exception as exc:
+            # The row exists but the image could not be re-fetched from S3 right now;
+            # surface a retryable status so the browser can ask again.
+            raise HTTPException(status_code=502, detail=f"Could not fetch image: {exc}") from exc
         if not path:
             raise HTTPException(status_code=404, detail="Cached image not found")
         return FileResponse(path, media_type="image/jpeg")

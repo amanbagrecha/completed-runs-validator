@@ -137,16 +137,22 @@ def merge_runs(local: sqlite3.Connection, remote: sqlite3.Connection, dry_run: b
 
 
 def merge_run_images(local: sqlite3.Connection, remote: sqlite3.Connection, dry_run: bool) -> int:
+    # We deliberately drop the remote cache_path / cached_at: the cached JPEGs live in
+    # the remote machine's data/cache/images/ and are NOT transferred here. Copying the
+    # path would leave the local DB pointing at files that don't exist on this host
+    # (every /api/images/{id}/file then 404s). Inserting NULL marks the row as
+    # not-yet-cached so the normal on-demand / background machinery re-fetches the image
+    # from S3 via member_name when it is needed.
     inserted = 0
     for row in remote.execute(
-        "SELECT run_id, selection_version, image_index, member_name, cache_path, cached_at, created_at FROM run_images"
+        "SELECT run_id, selection_version, image_index, member_name, created_at FROM run_images"
     ):
         if not dry_run:
             local.execute(
                 """
                 INSERT OR IGNORE INTO run_images
                   (run_id, selection_version, image_index, member_name, cache_path, cached_at, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, NULL, NULL, ?)
                 """,
                 row,
             )

@@ -99,6 +99,50 @@ def get_image_file_path(conn: sqlite3.Connection, image_id: int) -> Path | None:
     return path if path.exists() else None
 
 
+def ensure_image_cached(conn: sqlite3.Connection, dataset: DatasetConfig, image_id: int) -> Path | None:
+    """Return the local file for an image, re-fetching it from S3 if the cache is gone.
+
+    Cached JPEGs may be deleted to reclaim disk (e.g. after a run is validated) or may
+    never have existed locally (rows merged from a validator DB). As long as the row
+    still records a member_name, the exact image can be re-downloaded from the run's
+    tar on demand, so revisiting a completed image still works.
+    """
+    row = conn.execute("SELECT * FROM run_images WHERE id = ?", (image_id,)).fetchone()
+    if not row:
+        return None
+
+    path = _existing_cache_file(row)
+    if path is not None:
+        return path
+    if not row["member_name"]:
+        return None
+
+    run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (row["run_id"],)).fetchone()
+    if not run:
+        return None
+
+    with _run_lock(dataset, row["run_id"]):
+        row = conn.execute("SELECT * FROM run_images WHERE id = ?", (image_id,)).fetchone()
+        if row is None:
+            return None
+        path = _existing_cache_file(row)
+        if path is not None:
+            return path
+        _cache_existing_images(conn, dataset, run, [row])
+        conn.commit()
+
+    refreshed = conn.execute("SELECT * FROM run_images WHERE id = ?", (image_id,)).fetchone()
+    return _existing_cache_file(refreshed) if refreshed else None
+
+
+def _existing_cache_file(row: sqlite3.Row) -> Path | None:
+    cache_path = row["cache_path"]
+    if not cache_path:
+        return None
+    path = ROOT_DIR / cache_path
+    return path if path.exists() else None
+
+
 def ensure_manifest_image_count(conn: sqlite3.Connection, dataset: DatasetConfig, run_id: str) -> int | None:
     run = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
     if not run:
