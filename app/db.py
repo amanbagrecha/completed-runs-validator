@@ -1,12 +1,63 @@
+import logging
+import random
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator, TypeVar
 
 from app.config import APP_DIR, DEFAULT_IMAGE_COUNT
 
 
 SQLITE_BUSY_TIMEOUT_MS = 30000
+
+# Retry tuning for "database is locked". WAL serialises writers and busy_timeout
+# makes a writer wait for a held write lock, but a read->write upgrade on a stale
+# snapshot (SQLITE_BUSY_SNAPSHOT) fails *immediately* and is NOT covered by
+# busy_timeout. Re-running the operation on a fresh connection takes a new
+# snapshot and succeeds once the competing writer has committed.
+LOCKED_RETRY_ATTEMPTS = 6
+LOCKED_RETRY_BASE_DELAY = 0.05
+LOCKED_RETRY_MAX_DELAY = 1.0
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+def _is_locked_error(exc: sqlite3.OperationalError) -> bool:
+    message = str(exc).lower()
+    return "database is locked" in message or "database is busy" in message
+
+
+def run_with_retry(
+    operation: Callable[[], T],
+    *,
+    attempts: int = LOCKED_RETRY_ATTEMPTS,
+    base_delay: float = LOCKED_RETRY_BASE_DELAY,
+) -> T:
+    """Run a DB operation, retrying briefly when SQLite reports the database is locked.
+
+    ``operation`` must be self-contained (open its own connection / transaction) so
+    that each attempt runs against a fresh snapshot. It should also be idempotent,
+    since a later attempt may re-run work an earlier attempt partially committed.
+    Non-lock errors propagate immediately; lock errors propagate after the final
+    attempt is exhausted.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            if not _is_locked_error(exc) or attempt == attempts:
+                raise
+            delay = min(base_delay * (2 ** (attempt - 1)), LOCKED_RETRY_MAX_DELAY)
+            delay += random.uniform(0, base_delay)
+            logger.warning(
+                "Database locked, retrying (attempt %d/%d) after %.3fs", attempt, attempts, delay
+            )
+            time.sleep(delay)
+    # Unreachable: the final attempt either returns or raises above.
+    raise AssertionError("run_with_retry exhausted without returning or raising")
 
 
 def init_db(db_path: Path) -> None:

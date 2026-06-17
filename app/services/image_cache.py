@@ -16,7 +16,7 @@ from typing import TypedDict
 from PIL import Image, ImageFile
 
 from app.config import DEFAULT_IMAGE_COUNT, DatasetConfig, JPEG_QUALITY, ROOT_DIR
-from app.db import get_conn
+from app.db import get_conn, run_with_retry
 from app.services.s3_index import get_s3_client
 
 
@@ -262,7 +262,7 @@ def _prefetch_worker() -> None:
     while True:
         dataset, run_id, key = _PREFETCH_QUEUE.get()
         try:
-            _prefetch_run_images(dataset, run_id)
+            run_with_retry(lambda: _prefetch_run_images(dataset, run_id))
         except Exception:
             logger.warning("Background image prefetch failed for %s:%s", dataset.slug, run_id, exc_info=True)
         finally:
@@ -276,7 +276,7 @@ def _review_ensure_worker() -> None:
         dataset, run_id, key = _REVIEW_ENSURE_QUEUE.get()
         should_requeue = False
         try:
-            should_requeue = _load_next_review_image(dataset, run_id)
+            should_requeue = run_with_retry(lambda: _load_next_review_image(dataset, run_id))
         except Exception:
             logger.warning("Background review image load failed for %s:%s", dataset.slug, run_id, exc_info=True)
         finally:

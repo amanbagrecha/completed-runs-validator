@@ -15,7 +15,7 @@ from starlette.templating import Jinja2Templates
 
 from app.config import DATASETS, DEFAULT_IMAGE_COUNT, DatasetConfig, ROOT_DIR, UI_DATASETS
 from app.auth import authenticate, clear_auth_cookie, set_auth_cookie
-from app.db import get_conn
+from app.db import get_conn, run_with_retry
 from app.services.image_cache import (
     append_run_images,
     count_prefetched_images,
@@ -448,9 +448,12 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
 
     @router.get(f"{dataset.api_prefix}/images/{{image_id}}/file")
     def image_file(image_id: int):
-        try:
+        def operation():
             with get_conn(dataset.db_path) as conn:
-                path = ensure_image_cached(conn, dataset, image_id)
+                return ensure_image_cached(conn, dataset, image_id)
+
+        try:
+            path = run_with_retry(operation)
         except Exception as exc:
             # The row exists but the image could not be re-fetched from S3 right now;
             # surface a retryable status so the browser can ask again.
@@ -463,12 +466,16 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
     def save_validations(payload: ValidationRequest):
         if not payload.items:
             raise HTTPException(status_code=400, detail="No validation items submitted")
-        try:
+
+        def operation():
             with get_conn(dataset.db_path) as conn:
-                saved = submit_validations(
+                return submit_validations(
                     conn,
                     [{"image_id": item.image_id, "status": item.status, "notes": item.notes} for item in payload.items],
                 )
+
+        try:
+            saved = run_with_retry(operation)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"saved": saved}
@@ -480,10 +487,14 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
         locality_category: str = Query("all"),
         state: Literal["unreviewed", "submitted", "pass", "fail", "all"] = Query("unreviewed"),
     ):
-        try:
+        def operation():
             with get_conn(dataset.db_path) as conn:
                 skipped_runs, pending_runs = _prepare_review_images(conn, dataset, batch, run_id, locality_category, state)
                 rows = _list_review_image_rows(conn, dataset, batch, run_id, locality_category, state, skipped_runs)
+                return skipped_runs, pending_runs, rows
+
+        try:
+            skipped_runs, pending_runs, rows = run_with_retry(operation)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
@@ -515,7 +526,8 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
             raise HTTPException(status_code=400, detail="No review items submitted")
 
         validator = getattr(request.state, "user", None)
-        try:
+
+        def operation():
             with get_conn(dataset.db_path) as conn:
                 run_ids = []
                 seen_run_ids: set[str] = set()
@@ -552,6 +564,10 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
                         )
                     else:
                         progress_run_ids.append(run_id)
+                return saved, completed_runs, completion_payloads, progress_run_ids
+
+        try:
+            saved, completed_runs, completion_payloads, progress_run_ids = run_with_retry(operation)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
