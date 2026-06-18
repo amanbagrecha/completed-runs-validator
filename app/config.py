@@ -49,7 +49,7 @@ class AuthConfig:
 
 
 WASABI_BATCH_RANGE_START = 1
-WASABI_BATCH_RANGE_END = 57
+WASABI_BATCH_RANGE_END = 61
 WASABI_BATCH_PREFIXES = [
     (f"batch-{batch_number:02d}", f"batch-{batch_number:02d}/")
     for batch_number in range(WASABI_BATCH_RANGE_START, WASABI_BATCH_RANGE_END + 1)
