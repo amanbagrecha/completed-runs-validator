@@ -28,7 +28,11 @@ from app.services.image_cache import (
     queue_run_image_prefetch,
     review_image_target,
 )
-from app.services.sheets import is_compltd_completed, is_existing_sheet_validation_complete
+from app.services.sheets import (
+    is_compltd_completed,
+    is_existing_sheet_validation_complete,
+    is_existing_sheet_validation_retry,
+)
 from app.services.sheet_writeback import (
     CompletionWriteback,
     SheetWriteResult,
@@ -735,6 +739,10 @@ def _ensure_run_available(conn, run_id: str) -> None:
         raise ValueError(f"Unknown run_id: {run_id}")
     if row["validation_completed_at"] is not None:
         return
+    # Runs flagged 'retry' upstream stay open for re-review even though they're
+    # completed elsewhere — a reviewer may revisit why and change the outcome.
+    if is_existing_sheet_validation_retry(row["sheet_validation"]):
+        return
     if is_existing_sheet_validation_complete(row["sheet_validation"]):
         raise PermissionError("Run is already marked complete in the existing Google Sheet validation column")
     if is_compltd_completed(row["compltd_status"]):
@@ -1312,12 +1320,20 @@ def _append_locality_category_filter(where: list[str], params: list[str | int], 
 
 
 def _append_sheet_availability_filter(where: list[str]) -> None:
+    # Hide runs already resolved elsewhere — approved upstream, or completed on any
+    # machine (compltd_status is the shared-Sheet completion flag) — so reviewers
+    # aren't re-served finished work. Exceptions that stay visible:
+    #   * runs this machine completed locally (validation_completed_at set);
+    #   * runs marked 'retry' upstream — a reviewer should be able to revisit why it
+    #     was retried and, if needed, change the review, even though the run is
+    #     completed and its images were already validated.
     where.append(
         """
         (
             r.validation_completed_at IS NOT NULL
+            OR LOWER(COALESCE(TRIM(r.sheet_validation), '')) = 'retry'
             OR (
-                LOWER(COALESCE(TRIM(r.sheet_validation), '')) NOT IN ('approved', 'retry')
+                LOWER(COALESCE(TRIM(r.sheet_validation), '')) <> 'approved'
                 AND LOWER(COALESCE(TRIM(r.compltd_status), '')) <> 'completed'
             )
         )

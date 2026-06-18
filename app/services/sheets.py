@@ -29,6 +29,9 @@ class SheetRun:
 
 
 EXISTING_SHEET_COMPLETE_VALUES = {"approved", "retry"}
+# 'retry' is a resolved value upstream, but the app deliberately keeps retry runs
+# open so a reviewer can revisit why they were retried and change the outcome.
+EXISTING_SHEET_RETRY_VALUE = "retry"
 COMPLTD_COMPLETE_STATUS = "completed"
 
 
@@ -93,6 +96,10 @@ def is_existing_sheet_validation_complete(value: str | None) -> bool:
 
 def is_compltd_completed(value: str | None) -> bool:
     return _normalized(value) == COMPLTD_COMPLETE_STATUS
+
+
+def is_existing_sheet_validation_retry(value: str | None) -> bool:
+    return _normalized(value) == EXISTING_SHEET_RETRY_VALUE
 
 
 def _normalized(value: str | None) -> str:
