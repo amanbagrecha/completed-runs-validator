@@ -31,7 +31,6 @@ from app.services.image_cache import (
 from app.services.sheets import (
     is_compltd_completed,
     is_existing_sheet_validation_complete,
-    is_existing_sheet_validation_retry,
 )
 from app.services.sheet_writeback import (
     CompletionWriteback,
@@ -739,10 +738,8 @@ def _ensure_run_available(conn, run_id: str) -> None:
         raise ValueError(f"Unknown run_id: {run_id}")
     if row["validation_completed_at"] is not None:
         return
-    # Runs flagged 'retry' upstream stay open for re-review even though they're
-    # completed elsewhere — a reviewer may revisit why and change the outcome.
-    if is_existing_sheet_validation_retry(row["sheet_validation"]):
-        return
+    # 'retry' (like 'approved') is a resolved value upstream: the run was already
+    # validated, so it stays closed and is not re-served for review.
     if is_existing_sheet_validation_complete(row["sheet_validation"]):
         raise PermissionError("Run is already marked complete in the existing Google Sheet validation column")
     if is_compltd_completed(row["compltd_status"]):
@@ -1320,20 +1317,18 @@ def _append_locality_category_filter(where: list[str], params: list[str | int], 
 
 
 def _append_sheet_availability_filter(where: list[str]) -> None:
-    # Hide runs already resolved elsewhere — approved upstream, or completed on any
-    # machine (compltd_status is the shared-Sheet completion flag) — so reviewers
-    # aren't re-served finished work. Exceptions that stay visible:
-    #   * runs this machine completed locally (validation_completed_at set);
-    #   * runs marked 'retry' upstream — a reviewer should be able to revisit why it
-    #     was retried and, if needed, change the review, even though the run is
-    #     completed and its images were already validated.
+    # Hide runs already resolved elsewhere — approved or retried upstream, or completed
+    # on any machine (compltd_status is the shared-Sheet completion flag) — so reviewers
+    # aren't re-served finished work. 'retry' is a resolved/completed outcome too: the
+    # run was already validated and will be revisited at the end of the pass, not redone
+    # now. The only exception that stays visible is a run this machine completed locally
+    # (validation_completed_at set), so a reviewer can see their own finished work.
     where.append(
         """
         (
             r.validation_completed_at IS NOT NULL
-            OR LOWER(COALESCE(TRIM(r.sheet_validation), '')) = 'retry'
             OR (
-                LOWER(COALESCE(TRIM(r.sheet_validation), '')) <> 'approved'
+                LOWER(COALESCE(TRIM(r.sheet_validation), '')) NOT IN ('approved', 'retry')
                 AND LOWER(COALESCE(TRIM(r.compltd_status), '')) <> 'completed'
             )
         )
