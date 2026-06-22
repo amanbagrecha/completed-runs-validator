@@ -15,7 +15,7 @@ from typing import TypedDict
 
 from PIL import Image, ImageFile
 
-from app.config import DEFAULT_IMAGE_COUNT, DatasetConfig, JPEG_QUALITY, ROOT_DIR
+from app.config import DEFAULT_IMAGE_COUNT, DatasetConfig, JPEG_QUALITY, MAX_CACHED_IMAGE_SIZE, ROOT_DIR
 from app.db import get_conn, run_with_retry
 from app.services.s3_index import get_s3_client
 
@@ -663,7 +663,14 @@ def _cache_image_bytes(
     absolute_path = dataset.cache_dir / run_id / f"v{version}" / f"{image_index + 1}.jpg"
     absolute_path.parent.mkdir(parents=True, exist_ok=True)
     with Image.open(io.BytesIO(image_bytes)) as image:
-        image.convert("RGB").save(
+        # draft() lets libjpeg scale during decode (powers of two), so an 8k×4k pano is
+        # decoded straight to ~MAX_CACHED_IMAGE_SIZE instead of a ~96 MiB full raster.
+        # This is the change that keeps RAM from ballooning under concurrent decodes.
+        image.draft("RGB", MAX_CACHED_IMAGE_SIZE)
+        image = image.convert("RGB")
+        # draft only lands on power-of-two scales, so clamp to the exact cap afterwards.
+        image.thumbnail(MAX_CACHED_IMAGE_SIZE)
+        image.save(
             absolute_path,
             format="JPEG",
             quality=JPEG_QUALITY,

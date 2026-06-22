@@ -92,6 +92,11 @@ UI_DATASETS = (WASABI_DATASET,)
 
 DEFAULT_IMAGE_COUNT = 6
 JPEG_QUALITY = 75
+# Cap the longest edge of cached images. Source panoramas are ~8k×4k; decoding one
+# to a full raster costs ~96 MiB of RAM, and several concurrent decodes (prefetch +
+# review-ensure + on-demand) bloat memory and crash the box. We decode straight to
+# this size via JPEG draft mode so the full-resolution raster is never materialized.
+MAX_CACHED_IMAGE_SIZE = (4096, 2048)
 
 
 def _load_auth_file_values() -> dict[str, str]:
