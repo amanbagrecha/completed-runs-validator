@@ -37,6 +37,7 @@ LOCAL_API_URL = "http://127.0.0.1:8123"
 DEFAULT_REMOTES = [
     "ec2-user@100.119.159.28:/home/ec2-user/completed-runs-validator/data/app.db",
     "ubuntu@100.101.42.18:/home/ubuntu/completed-runs-validator/data/app.db",
+    "ubuntu@100.107.25.98:/home/ubuntu/completed-runs-validator/data/app.db",
 ]
 
 

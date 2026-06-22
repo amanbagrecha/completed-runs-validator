@@ -4,6 +4,10 @@
     "start-validator": {
       "description": "Start the validator server in tmux and show review links.",
       "template": "Start the Completed Runs Validator from the repository root. Run `bash scripts/start_validator_tmux.sh`, then report the Local URL, Network URL, and tmux attach command from the script output. If the script reports missing environment or auth settings, explain the exact missing setting. Do not commit or print service-account JSON contents."
+    },
+    "sync-remote-dbs": {
+      "description": "Pull app.db from all validator machines over SSH/Tailscale, merge into the local orchestrator DB, then flush any pending completions to Google Sheets.",
+      "template": "Pull app.db from all validator machines over SSH/Tailscale, merge into the local orchestrator DB, then flush any pending completions to Google Sheets. Steps: 1. Run `python3 scripts/merge_remote_dbs.py --dry-run` and show the summary to the user. 2. Ask the user to confirm before applying. 3. If confirmed, run `python3 scripts/merge_remote_dbs.py --sheet-sync` and report the results. Do not commit or print service-account JSON contents."
     }
   }
 }
