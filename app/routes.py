@@ -55,8 +55,13 @@ LOCALITY_CATEGORY_OPTIONS = [
     ("rural", "Rural"),
     ("unknown", "Unknown"),
 ]
-REVIEW_READY_IMAGE_BUFFER = DEFAULT_IMAGE_COUNT * 4
-REVIEW_BACKGROUND_RUN_LIMIT = 3
+# How far ahead the review queue caches: keep refilling background image
+# preparation until this many unreviewed images are ready, queueing up to this
+# many runs per request. Sized so the ready pool stays comfortably above the
+# client's QUEUE_LOW_WATER top-up threshold (review.js), so a reviewer never
+# reaches the end of the queue before the next runs finish caching.
+REVIEW_READY_IMAGE_BUFFER = DEFAULT_IMAGE_COUNT * 8
+REVIEW_BACKGROUND_RUN_LIMIT = 6
 
 
 @auth_router.get("/login")

@@ -1,6 +1,13 @@
 const apiBase = document.body.dataset.apiBase || "/api";
 const reviewApiBase = `${apiBase}/review`;
 
+// Keep topping up the queue in the background while runs are still preparing and
+// the queue has fallen below this many images, rather than waiting for it to
+// drain to zero (which forced reviewers to refresh the page). ~2 runs' worth of
+// buffer; the server caches further ahead (REVIEW_READY_IMAGE_BUFFER) so a dip
+// below this is refilled before the reviewer reaches the end.
+const QUEUE_LOW_WATER = 12;
+
 const loadButton = document.querySelector("#loadButton");
 const batchSelect = document.querySelector("#batchSelect");
 const localityCategoryFilter = document.querySelector("#localityCategoryFilter");
@@ -436,7 +443,7 @@ async function refreshQueue({ background }) {
 
     applyQueueUpdate(data.images || [], { resetDrafts: !background });
     const pendingRuns = Number(data.pending_runs || 0);
-    if (pendingRuns > 0 && queue.length === 0) {
+    if (pendingRuns > 0 && queue.length <= QUEUE_LOW_WATER) {
       scheduleQueueRefresh();
     } else {
       stopQueueRefresh();
