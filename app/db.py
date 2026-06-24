@@ -187,3 +187,39 @@ def get_conn(db_path: Path) -> Iterator[sqlite3.Connection]:
         raise
     finally:
         conn.close()
+
+
+@contextmanager
+def write_conn(db_path: Path) -> Iterator[sqlite3.Connection]:
+    """Open a connection inside a ``BEGIN IMMEDIATE`` transaction.
+
+    A plain connection takes a read snapshot on its first SELECT and only tries
+    to acquire the write lock when it later issues a write. In WAL mode that
+    read->write upgrade fails *immediately* with SQLITE_BUSY (snapshot conflict)
+    if another writer committed in the meantime, and that immediate failure is
+    NOT covered by ``busy_timeout`` -- which is the root of the "database is
+    locked" 500s under concurrent writers.
+
+    ``BEGIN IMMEDIATE`` instead acquires the write lock up front, so a competing
+    writer *waits* (up to ``busy_timeout``) for the lock to free rather than
+    failing instantly. Combined with keeping all network I/O out of the
+    transaction (so the lock is only ever held for a few fast statements), this
+    serialises writers cleanly and removes the lock-contention failures.
+
+    Use this for any operation that writes; keep ``get_conn`` for read-only work.
+    The body must NOT perform slow/network work and must NOT call ``commit()``
+    itself -- this manager owns the transaction.
+    """
+    conn = sqlite3.connect(db_path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()

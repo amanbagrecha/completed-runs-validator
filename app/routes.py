@@ -15,7 +15,7 @@ from starlette.templating import Jinja2Templates
 
 from app.config import DATASETS, DEFAULT_IMAGE_COUNT, DatasetConfig, ROOT_DIR, UI_DATASETS
 from app.auth import authenticate, clear_auth_cookie, set_auth_cookie
-from app.db import get_conn, run_with_retry
+from app.db import get_conn, run_with_retry, write_conn
 from app.services.image_cache import (
     append_run_images,
     count_prefetched_images,
@@ -393,8 +393,11 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
         try:
             with get_conn(dataset.db_path) as conn:
                 _ensure_run_available(conn, run_id)
-                images = ensure_run_images(conn, dataset, run_id)
-                ensure_manifest_image_count(conn, dataset, run_id)
+            # Image caching is self-contained (S3 fetch off-DB, short write
+            # commit), so it never holds a connection across the network.
+            images = ensure_run_images(dataset, run_id)
+            ensure_manifest_image_count(dataset, run_id)
+            with get_conn(dataset.db_path) as conn:
                 run = _fetch_run_status(conn, run_id)
                 prefetched_images = count_prefetched_images(conn, run_id)
         except ValueError as exc:
@@ -416,8 +419,9 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
         try:
             with get_conn(dataset.db_path) as conn:
                 _ensure_run_available(conn, run_id)
-                ensure_manifest_image_count(conn, dataset, run_id)
-                images = append_run_images(conn, dataset, run_id, DEFAULT_IMAGE_COUNT)
+            ensure_manifest_image_count(dataset, run_id)
+            images = append_run_images(dataset, run_id, DEFAULT_IMAGE_COUNT)
+            with get_conn(dataset.db_path) as conn:
                 run = _fetch_run_status(conn, run_id)
                 prefetched_images = count_prefetched_images(conn, run_id)
         except ValueError as exc:
@@ -436,10 +440,15 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
 
     @router.post(f"{dataset.api_prefix}/runs/{{run_id}}/complete")
     def complete_run(run_id: str, request: Request):
+        user = getattr(request.state, "user", None)
         try:
+            # Mark complete in a short write transaction, then push to the sheet
+            # separately so the slow network round-trip is not done while holding
+            # the SQLite write lock.
+            with write_conn(dataset.db_path) as conn:
+                complete_run_validation(conn, run_id, user)
+            sheet_sync = _sync_completion_to_sheet(dataset, run_id, user)
             with get_conn(dataset.db_path) as conn:
-                complete_run_validation(conn, run_id, getattr(request.state, "user", None))
-                sheet_sync = _sync_completion_to_sheet(conn, run_id, getattr(request.state, "user", None))
                 run = _fetch_run_status(conn, run_id)
         except ValueError as exc:
             status_code = 404 if str(exc).startswith("Unknown run_id") else 400
@@ -451,12 +460,10 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
 
     @router.get(f"{dataset.api_prefix}/images/{{image_id}}/file")
     def image_file(image_id: int):
-        def operation():
-            with get_conn(dataset.db_path) as conn:
-                return ensure_image_cached(conn, dataset, image_id)
-
         try:
-            path = run_with_retry(operation)
+            # Self-contained: reads with its own connection and re-fetches from
+            # S3 off-DB, persisting via a short write transaction.
+            path = ensure_image_cached(dataset, image_id)
         except Exception as exc:
             # The row exists but the image could not be re-fetched from S3 right now;
             # surface a retryable status so the browser can ask again.
@@ -471,7 +478,7 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
             raise HTTPException(status_code=400, detail="No validation items submitted")
 
         def operation():
-            with get_conn(dataset.db_path) as conn:
+            with write_conn(dataset.db_path) as conn:
                 return submit_validations(
                     conn,
                     [{"image_id": item.image_id, "status": item.status, "notes": item.notes} for item in payload.items],
@@ -491,10 +498,13 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
         state: Literal["unreviewed", "submitted", "pass", "fail", "all"] = Query("unreviewed"),
     ):
         def operation():
+            # _prepare_review_images manages its own short-lived connections so
+            # the on-demand bootstrap caching (S3 network) is never done while a
+            # request connection holds a write lock.
+            skipped_runs, pending_runs = _prepare_review_images(dataset, batch, run_id, locality_category, state)
             with get_conn(dataset.db_path) as conn:
-                skipped_runs, pending_runs = _prepare_review_images(conn, dataset, batch, run_id, locality_category, state)
                 rows = _list_review_image_rows(conn, dataset, batch, run_id, locality_category, state, skipped_runs)
-                return skipped_runs, pending_runs, rows
+            return skipped_runs, pending_runs, rows
 
         try:
             skipped_runs, pending_runs, rows = run_with_retry(operation)
@@ -531,7 +541,11 @@ def create_router(dataset: DatasetConfig) -> APIRouter:
         validator = getattr(request.state, "user", None)
 
         def operation():
-            with get_conn(dataset.db_path) as conn:
+            # BEGIN IMMEDIATE up front: the submit grabs the write lock and waits
+            # on busy_timeout for it rather than read->write upgrading and failing
+            # instantly on a snapshot conflict. No network happens in here (sheet
+            # writeback is deferred to background_tasks below).
+            with write_conn(dataset.db_path) as conn:
                 run_ids = []
                 seen_run_ids: set[str] = set()
                 items = []
@@ -621,7 +635,7 @@ def _sync_runs_to_sheet(
     if not completed:
         return
     try:
-        with get_conn(db_path) as conn:
+        with write_conn(db_path) as conn:
             for payload in completed:
                 conn.execute(
                     """
@@ -747,7 +761,6 @@ def _ensure_run_available(conn, run_id: str) -> None:
 
 
 def _prepare_review_images(
-    conn,
     dataset: DatasetConfig,
     batch: str,
     run_id: str,
@@ -757,9 +770,11 @@ def _prepare_review_images(
     if state not in {"unreviewed", "all"}:
         return [], 0
 
-    _sync_review_image_targets(conn, _list_review_run_rows(conn, dataset, batch, run_id, locality_category))
-    ready_rows = _list_review_image_rows(conn, dataset, batch, run_id, locality_category, state)
-    run_rows = _ordered_review_run_rows(_list_review_run_rows(conn, dataset, batch, run_id, locality_category))
+    _sync_review_image_targets(dataset, batch, run_id, locality_category)
+    with get_conn(dataset.db_path) as conn:
+        ready_rows = _list_review_image_rows(conn, dataset, batch, run_id, locality_category, state)
+        run_rows = _ordered_review_run_rows(_list_review_run_rows(conn, dataset, batch, run_id, locality_category))
+
     skipped_runs: list[str] = []
     if not ready_rows:
         for row in run_rows:
@@ -767,18 +782,20 @@ def _prepare_review_images(
             if not _review_run_is_pending(row):
                 continue
             try:
-                _bootstrap_review_run(conn, dataset, run_id_value)
+                _bootstrap_review_run(dataset, run_id_value)
             except Exception:
                 skipped_runs.append(run_id_value)
                 continue
-            if _list_review_image_rows(conn, dataset, batch, run_id, locality_category, state, skipped_runs):
-                break
+            with get_conn(dataset.db_path) as conn:
+                if _list_review_image_rows(conn, dataset, batch, run_id, locality_category, state, skipped_runs):
+                    break
 
-    _sync_review_image_targets(conn, _list_review_run_rows(conn, dataset, batch, run_id, locality_category))
-    run_rows = _ordered_review_run_rows(_list_review_run_rows(conn, dataset, batch, run_id, locality_category))
+    _sync_review_image_targets(dataset, batch, run_id, locality_category)
+    with get_conn(dataset.db_path) as conn:
+        run_rows = _ordered_review_run_rows(_list_review_run_rows(conn, dataset, batch, run_id, locality_category))
+        ready_rows = _list_review_image_rows(conn, dataset, batch, run_id, locality_category, state, skipped_runs)
     pending_runs = 0
     queued_runs = 0
-    ready_rows = _list_review_image_rows(conn, dataset, batch, run_id, locality_category, state, skipped_runs)
     for row in run_rows:
         if row["run_id"] in skipped_runs:
             continue
@@ -834,7 +851,11 @@ def _fetch_review_run_row(conn, run_id: str):
     return row
 
 
-def _sync_review_image_targets(conn, run_rows) -> None:
+def _sync_review_image_targets(dataset: DatasetConfig, batch: str, run_id: str, locality_category: str) -> None:
+    with get_conn(dataset.db_path) as conn:
+        run_rows = _list_review_run_rows(conn, dataset, batch, run_id, locality_category)
+
+    updates: list[tuple[int, str]] = []
     for row in run_rows:
         total_count = row["total_image_count"]
         if total_count is None:
@@ -842,26 +863,42 @@ def _sync_review_image_targets(conn, run_rows) -> None:
         target = review_image_target(int(total_count), int(row["image_target_count"] or 1))
         current_target = int(row["image_target_count"] or 1)
         if target != current_target:
-            conn.execute("UPDATE runs SET image_target_count = ? WHERE run_id = ?", (target, row["run_id"]))
+            updates.append((target, row["run_id"]))
+
+    if updates:
+        with write_conn(dataset.db_path) as conn:
+            for target, target_run_id in updates:
+                conn.execute("UPDATE runs SET image_target_count = ? WHERE run_id = ?", (target, target_run_id))
 
 
-def _bootstrap_review_run(conn, dataset: DatasetConfig, run_id: str) -> None:
-    total_count = ensure_manifest_image_count(conn, dataset, run_id)
-    row = _fetch_review_run_row(conn, run_id)
+def _set_image_target_count(dataset: DatasetConfig, run_id: str, target: int) -> None:
+    with write_conn(dataset.db_path) as conn:
+        conn.execute("UPDATE runs SET image_target_count = ? WHERE run_id = ?", (target, run_id))
+
+
+def _bootstrap_review_run(dataset: DatasetConfig, run_id: str) -> None:
+    # ensure_manifest_image_count / ensure_run_images_to_count are self-contained
+    # (own connections, S3 fetch off-DB), so no request connection is held across
+    # the network here.
+    total_count = ensure_manifest_image_count(dataset, run_id)
+    with get_conn(dataset.db_path) as conn:
+        row = _fetch_review_run_row(conn, run_id)
     if total_count is not None:
         target = review_image_target(int(total_count), int(row["image_target_count"] or 1))
         current_target = int(row["image_target_count"] or 1)
         if target != current_target:
-            conn.execute("UPDATE runs SET image_target_count = ? WHERE run_id = ?", (target, run_id))
-            row = _fetch_review_run_row(conn, run_id)
+            _set_image_target_count(dataset, run_id, target)
+            with get_conn(dataset.db_path) as conn:
+                row = _fetch_review_run_row(conn, run_id)
 
     target = int(row["image_target_count"] or 1)
     active_images = int(row["active_images"] or 0)
     cached_images = int(row["cached_images"] or 0)
     ensure_count = min(target, max(active_images, cached_images + 1, 1))
-    ensure_run_images_to_count(conn, dataset, run_id, ensure_count)
+    ensure_run_images_to_count(dataset, run_id, ensure_count)
 
-    refreshed_row = _fetch_review_run_row(conn, run_id)
+    with get_conn(dataset.db_path) as conn:
+        refreshed_row = _fetch_review_run_row(conn, run_id)
     refreshed_total = refreshed_row["total_image_count"]
     if refreshed_total is None:
         return
@@ -869,7 +906,7 @@ def _bootstrap_review_run(conn, dataset: DatasetConfig, run_id: str) -> None:
     refreshed_target = review_image_target(int(refreshed_total), int(refreshed_row["image_target_count"] or 1))
     current_target = int(refreshed_row["image_target_count"] or 1)
     if refreshed_target != current_target:
-        conn.execute("UPDATE runs SET image_target_count = ? WHERE run_id = ?", (refreshed_target, run_id))
+        _set_image_target_count(dataset, run_id, refreshed_target)
 
 
 def _review_run_is_pending(row) -> bool:
@@ -1336,32 +1373,35 @@ def _append_sheet_availability_filter(where: list[str]) -> None:
     )
 
 
-def _sync_completion_to_sheet(conn, run_id: str, completed_by: str | None) -> SheetWriteResult:
-    payload = _completion_writeback_payload(conn, run_id, completed_by)
+def _sync_completion_to_sheet(dataset: DatasetConfig, run_id: str, completed_by: str | None) -> SheetWriteResult:
+    with get_conn(dataset.db_path) as conn:
+        payload = _completion_writeback_payload(conn, run_id, completed_by)
+    # Network round-trip happens with no DB connection held.
     result = write_run_completion(payload)
     if result.status == "updated":
-        conn.execute(
-            """
-            UPDATE runs
-            SET compltd_status = 'completed',
-                compltd_validator = ?,
-                compltd_completed_at = ?,
-                compltd_outcome = ?,
-                compltd_reviewed_images = ?,
-                compltd_failed_images = ?,
-                compltd_updated_at = ?
-            WHERE run_id = ?
-            """,
-            (
-                payload.validator,
-                payload.completed_at,
-                payload.outcome,
-                payload.reviewed_images,
-                payload.failed_images,
-                payload.completed_at,
-                run_id,
-            ),
-        )
+        with write_conn(dataset.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE runs
+                SET compltd_status = 'completed',
+                    compltd_validator = ?,
+                    compltd_completed_at = ?,
+                    compltd_outcome = ?,
+                    compltd_reviewed_images = ?,
+                    compltd_failed_images = ?,
+                    compltd_updated_at = ?
+                WHERE run_id = ?
+                """,
+                (
+                    payload.validator,
+                    payload.completed_at,
+                    payload.outcome,
+                    payload.reviewed_images,
+                    payload.failed_images,
+                    payload.completed_at,
+                    run_id,
+                ),
+            )
     return result
 
 
